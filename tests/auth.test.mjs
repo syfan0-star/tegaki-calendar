@@ -82,7 +82,7 @@ test('config constants', () => {
 });
 
 test('isGoogleConfigured: false while the client id is empty', () => {
-  assert.equal(isGoogleConfigured(), false);
+  assert.equal(isGoogleConfigured(), GOOGLE_CLIENT_ID !== '');
   assert.equal(isGoogleConfigured(''), false);
   assert.equal(isGoogleConfigured('.apps.googleusercontent.com'), false);
   assert.equal(isGoogleConfigured('abc.example.com'), false);

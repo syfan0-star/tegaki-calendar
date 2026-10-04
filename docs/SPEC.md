@@ -259,7 +259,7 @@ export function drawLiveStroke(ctx, partial)  // same visual as drawStroke for a
 
 ### C. js/config.js
 ```js
-export const APP_VERSION = '1.0.2';
+export const APP_VERSION = '1.0.3';
 export const GOOGLE_CLIENT_ID = '';  // filled in after Google Cloud setup ('' → Google features disabled, demo only)
 export const SCOPES = { events: '.../calendar.events', calList: '.../calendar.calendarlist.readonly', appdata: '.../drive.appdata' }; // full URLs, see §6
 export const PAGES_ORIGIN_PATH = 'https://syfan0-star.github.io/tegaki-calendar/';

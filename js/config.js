@@ -1,12 +1,12 @@
 // App-wide constants for the Google integration.
 //
-// GOOGLE_CLIENT_ID stays '' until the Google Cloud OAuth client is created (docs/SETUP.md).
-// While it is empty, isGoogleConfigured() is false and the app runs in お試しモード only.
+// GOOGLE_CLIENT_ID is the Web client of the Google Cloud project 'tegaki-calendar' (docs/SETUP.md).
+// A client ID is public by design (it is sent in every sign-in URL); the client secret is never used.
 
-export const APP_VERSION = '1.0.2';
+export const APP_VERSION = '1.0.3';
 
 /** OAuth 2.0 Web client ID ('xxxx.apps.googleusercontent.com'); '' → Google features disabled. */
-export const GOOGLE_CLIENT_ID = '';
+export const GOOGLE_CLIENT_ID = '114879404947-dsm25vst22i9gvj1kkg418nb4n74miiv.apps.googleusercontent.com';
 
 /** OAuth scopes, requested together in one consent (granular consent may drop some of them). */
 export const SCOPES = Object.freeze({
