@@ -393,6 +393,9 @@
   pointer-events: auto;
   cursor: pointer;
 }
+/* Thinned lanes of a busy day (a tap opens that day): flatter corners so stacked bars stay distinct
+   (before cont-left/right, which square off the continuing ends). */
+.events .mc-bar.is-thin { padding: 0 0.25em; border-radius: 2px; }
 .events .mc-bar.cont-left { border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .events .mc-bar.cont-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .events .mc-bar.is-out { opacity: 0.55; }

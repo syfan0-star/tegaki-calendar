@@ -60,6 +60,7 @@ js/ink/model.js            B
 js/ink/geometry.js         B
 js/ink/render.js           B
 js/ink/surface.js          E
+js/ink/legacy-week-start.js     (1.0.4: copies ink of the old Sunday-start week/month pages onto the Monday pages; §4 B)
 js/ui/header.js            F2b
 js/ui/toolbar.js           F2b
 js/ui/event-dialog.js      F2b
@@ -116,7 +117,8 @@ Rules for all code:
 
 Settings (owned by F2's state.js, persisted in localStorage key `tegaki.settings.v1`):
 ```js
-{ weekStart: 0 /* 0=Sun, 1=Mon */, allowFinger: false, eraseInkAfterConvert: true,
+{ weekStart: 1 /* fixed: always Monday (no setting); a saved 0 (Sunday, before 1.0.4) is upgraded to 1 */,
+  allowFinger: false, eraseInkAfterConvert: true,
   hiddenCalendarIds: [] /* calendars the user unchecked */, defaultCalendarId: null /* null → primary */,
   demo: false, tool: 'pen', penColor: '#1f2937', penSize: 'medium', hlColor: '#fde047',
   view: 'week', date: 'YYYY-MM-DD' /* last route */ }
@@ -139,11 +141,12 @@ export const PAGE_SPECS = {
   month: { W: 1400, H: 1050, cols: 7, rows: 6, fit: 'contain' },
   // month: cell (r,c) = x c*200, y r*175, 200x175
 };
-export function pageIdFor(view, date, weekStart)  // 'd-2026-10-04' | 'w-2026-09-27' (week start date) | 'm-2026-10'
-                                                  // month with Monday start: 'm1-2026-10' (weekStart moves every date of
-                                                  // the week/month grids, so ink of one setting never shows on the other's grid)
+export function pageIdFor(view, date, weekStart)  // the app always passes weekStart 1 (Monday):
+                                                  // 'd-2026-10-04' | 'w-2026-09-28' (the Monday) | 'm1-2026-10' (Monday-start grid)
+                                                  // The Sunday-start ids of before 1.0.4 ('w-<sunday>', 'm-YYYY-MM') are never shown
+                                                  // any more: they are only copy sources (js/ink/legacy-week-start.js).
 export function rangeFor(view, date, weekStart)   // { start: Date, end: Date /*exclusive*/, days: Date[] }
-                                                  // day: 1 day; week: 7 days from startOfWeek; month: 42 days from monthGridStart
+                                                  // day: 1 day; week: 7 days Mon–Sun from startOfWeek; month: 42 days from monthGridStart (a Monday)
                                                   // month also returns { monthStart: Date } (1st of the month)
 export function navigate(view, date, delta)        // day ±1 day, week ±7 days, month ±1 month (returns 1st of month)
 export function minutesToY(view, minutes)          // day/week only: minutes * hourH / 60
@@ -211,7 +214,7 @@ export function layoutTimedEvents(events, day)
   // cols = number of columns in that event's cluster.
 export function splitAllDay(events)           // { allDay: CalEvent[], timed: CalEvent[] }
 export function allDayRowsForRange(events, days)
-  // For the week header: lay multi-day all-day (and timed events spanning ≥ 24h are NOT included; only allDay)
+  // For the week header and each month week row: lay multi-day all-day (timed events spanning ≥ 24h are NOT included; only allDay)
   // events into rows: [{ event, startCol, endCol /*inclusive*/, row }]; days = Date[] of the week.
 ```
 
@@ -256,6 +259,29 @@ export function drawStroke(ctx, stroke)       // ctx already scaled to logical u
 export function drawStrokes(ctx, strokes)
 export function drawLiveStroke(ctx, partial)  // same visual as drawStroke for an in-progress stroke {tool,color,size,pts}
 ```
+### B. js/ink/legacy-week-start.js (1.0.4: Sunday-start pages → Monday-start pages)
+Ink written before 1.0.4 on 'w-<sunday>' / 'm-YYYY-MM' pages is copied onto the Monday page now showing the same date
+(pure module; main.js `carryLegacyInk` runs it after every page load / refresh and after Drive is attached).
+```js
+export function legacySourcesFor(pageId)  // 'w-<monday>' → ['w-<monday−1>' (gives Mon–Sat), 'w-<monday+6>' (gives its Sunday)]
+                                          // 'm1-X' → ['m-X', 'm-(X−1)', 'm-(X+1)']: a neighbouring month's old grid gives the
+                                          //   dates its own new grid no longer shows. Other ids → [].
+export function legacyStrokesFor(pageId, sourceDocs) // live strokes of the sources that belong here, moved by whole columns/cells
+  // so they stay on their date (assigned by bbox centre; every old stroke lands on exactly one page; week gutter / off-grid
+  // strokes stay unmoved with the Mon–Sat page / the same month). A stroke lying inside the page is clamped to stay inside.
+  // Copy id = old id + '~w1' (LEGACY_SUFFIX; deterministic → re-running on any device adds nothing twice).
+export function legacyErasedCopyIds(pageId, sourceDocs) // '~w1' ids of every stroke tombstoned on the sources
+export function mergeLegacyInk(pageId, current, sourceDocs, now) // addStrokes(copies), then tombstone the live copies whose source
+  // stroke was erased (or moved) on the old page since — a copy made from an out-of-date old page never revives erased ink.
+  // A copy erased on the new page stays erased (its tombstone wins). Pure and idempotent.
+export function createLegacyCarryQueue(runOnce)  // one run at a time per pageId; a call during a run repeats it once afterwards
+export const LEGACY_DONE_PREFIX = 'legacyWeekStart:'  // kv "copied" flags; account data (removed on sign-out)
+export function legacyDoneKey(pageId)          // 'legacyWeekStart:v2:<pageId>' (flags of the first 1.0.4 build are ignored)
+export const LEGACY_RECHECK_UNTIL               // new Date(2026, 11, 1), local: until then the copy runs on every visit
+export function legacyDoneFlagCounts(now)       // false before LEGACY_RECHECK_UNTIL; after it a set flag skips the copy
+```
+main.js sets the flag only when every source was refreshed with the store status 'synced' (お試しモード: read locally)
+and none was unreadable; the merged page is saved (awaited) before the flag is written. The old pages are never deleted.
 
 ### C. js/config.js
 ```js
@@ -463,9 +489,15 @@ export function render({ pageEl, gridEl, eventsEl, stickyEl, layout, date, range
   // render keeps the page's on-screen position when the sticky header height changes (fit width: the viewport's
   //   scrollTop compensates, keepPageInPlace; showBanner/hideBanner do the same). main.js does NOT compensate again.
   // stickyEl (above the scroller, not inkable): day/week → weekday + date headers aligned to columns, holiday
-  //   names, and all-day events row(s) (tappable); month → weekday labels row.
+  //   names, and ALL all-day events (tappable; no 「他n件」; only an extreme stack, over ~34vh, scrolls inside the
+  //   header); month → weekday labels row (月…日).
   //   Tapping a date header → onDayTap(date). Month cells: date number at top-left (red Sun/holiday, blue Sat),
-  //   holiday name, events listed (up to what fits, then '+n件'); tapping the date number → onDayTap(date).
+  //   holiday name; tapping the date number → onDayTap(date). Month all-day events: bars spanning their days within each
+  //   week row (allDayRowsForRange), ALL shown, each row's bars right after its 7 cells in the DOM (aria-label with dates).
+  //   Too many lanes → the lanes get thinner per group of columns linked by bars (allDayColumnGroups / allDayLaneMetrics;
+  //   no minimum size, never past the cell bottom; the other days of the week keep full-size bars). A thinned bar under
+  //   ~16px on screen ('is-thin') opens the day view of the day under the finger/mouse tap; Enter/Space open the event;
+  //   Pencil taps are ignored. Timed events below the lanes, up to what fits, then '+n件' (timed events only).
 export function initialScrollMinutes({ date, now })   // day/week: minutes to scroll to on first show (now-60 if today else 7:00)
 ```
 
@@ -642,8 +674,7 @@ Event dialog (ui/event-dialog.js): see §4 F2 signature. Layout: sheet/modal cen
 
 Settings (ui/settings.js): `openSettings({ settings, calendars, auth: { signedIn, email, configured, demo }, version }) → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes' }>`
 - Sections: 「Googleアカウント」(status, email, ログイン/ログアウト, お試しモード切替), 「表示するカレンダー」(checkbox list with color dots),
-  「予定の登録先」(select writable), 「週の始まり」(日曜/月曜, note: 「切り替えると、週ページと月ページの手書きは別のページになります（元に戻すと表示されます）」),
-  「入力」(指・マウスでも書く toggle), 「予定にした手書きを消す（初期値）」toggle,
+  「予定の登録先」(select writable), 「入力」(指・マウスでも書く toggle), 「予定にした手書きを消す（初期値）」toggle,
   「データについて」(text: 手書きは Google ドライブの「アプリ専用の非表示フォルダ」に保存されます。…), バージョン.
 
 Toast (ui/toast.js): `toast(message, { actionLabel, onAction, duration = 3000, kind, onClose })` (duration ≤ 0 → sticky with ×;
@@ -669,7 +700,8 @@ main.js responsibilities (composition root):
 3. Build http/calendarApi/driveApi when configured & signed in; source = demo ? createDemoCalendarSource : createGoogleCalendarSource.
 4. inkStore = createInkStore({ kv, drive: (signedIn && hasScope(appdata) && !demo) ? driveApi : null, deviceId, ... }).
 5. Render current view: compute range/pageId, create page DOM (view-common), applyPageScale, view.render(...),
-   surface.setDoc(await inkStore.load(pageId)), then inkStore.refresh(pageId) (merge remote; surface.setDoc(merged, {resetHistory:false})).
+   surface.setDoc(await inkStore.load(pageId)), then inkStore.refresh(pageId) (merge remote; surface.setDoc(merged, {resetHistory:false})),
+   then carryLegacyInk (week/month pages: ink of the old Sunday-start pages, see §4 B legacy-week-start.js).
    Fetch events for range (cache by pageId; show cached immediately), re-render events only (not the ink) when they arrive.
    Google mode keeps the last events per page in kv 'events:<cacheId>' + 'eventsIndex' (LRU 40, tagged with the account)
    for offline cold starts; offline → banner with the time of the events shown. Some calendars failing → their last
@@ -683,7 +715,7 @@ main.js responsibilities (composition root):
    page + events, flush, maybe silent re-auth. 'online' → inkStore.flush(). Every 5 min while visible: events refresh
    and flush of unsent ink.
    Sign-out (confirm: it logs out every device): flush first; everything uploaded → remove page:/own:/seen:/events:/
-   dirty/inkAccount/eventsIndex; unsent ink → confirm, keep it for the SAME account.
+   legacyWeekStart:/dirty/inkAccount/eventsIndex; unsent ink → confirm, keep it for the SAME account.
 10. Navigation swipe: horizontal finger swipe (|dx| > 80px, |dx| > 2|dy|, < 600ms) on the viewport → prev/next.
 11. Keyboard (desktop): ←/→ prev/next, t today, d/w/m views, ⌘Z/Ctrl+Z undo, ⇧⌘Z/Ctrl+Y redo, p/h/e/l/v tools, Escape clears selection.
 12. Service worker registration (only on https or localhost), update toast 「新しいバージョンがあります」→ reload.

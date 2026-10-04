@@ -919,7 +919,19 @@ test('month render: 42 cells, chips fit the top of the cell, +n件, taps', () =>
   assert.ok(monLabels[6].className.includes('is-red'));
 }));
 
-test('month: every all-day event is shown as a bar — many lanes get thinner, multi-day bars span and continue', () => withDom((doc) => {
+// Month bar geometry in logical units (lu) of the 1400×1050 page.
+function barBox(b) {
+  const top = parseFloat(b.style.top) / 100 * 1050;
+  const left = parseFloat(b.style.left) / 100 * 1400;
+  return {
+    top, bottom: top + parseFloat(b.style.height) / 100 * 1050, height: parseFloat(b.style.height) / 100 * 1050,
+    left, right: left + parseFloat(b.style.width) / 100 * 1400,
+  };
+}
+const MONTH_CELL_H = 175;
+const LU_EPS = 1e-3; // pct() rounds to 4 decimals of a percent
+
+test('month: every all-day event is shown as a bar — a busy day gets thin lanes, multi-day bars span and continue', () => withDom((doc) => {
   const spec = PAGE_SPECS.month;
   const m = mountPage(doc, 'month', spec, 820, 900);
   const date = at(2026, 10, 1);
@@ -929,9 +941,10 @@ test('month: every all-day event is shown as a bar — many lanes get thinner, m
   const trip = ev(at(2026, 10, 9), at(2026, 10, 14), { allDay: true, title: '旅行' }); // Fri 10/9 .. Tue 10/13
   const timed = ev(at(2026, 10, 14, 9), at(2026, 10, 14, 10), { title: '会議' });
   const tapped = [];
+  const days = [];
   monthView.render({
     ...m, date, range, events: [...many, trip, timed], settings: { weekStart: 1 }, now,
-    onEventTap: (e) => tapped.push(e), onDayTap: () => {},
+    onEventTap: (e) => tapped.push(e), onDayTap: (d) => days.push(d),
   });
   const bars = m.eventsEl.findAll('mc-bar');
   const titles = bars.map((b) => b.textContent);
@@ -941,26 +954,268 @@ test('month: every all-day event is shown as a bar — many lanes get thinner, m
   assert.equal(tripBars.length, 2);
   assert.ok(tripBars[0].className.includes('cont-right'));
   assert.ok(tripBars[1].className.includes('cont-left'));
-  // all 9 + the trip's 10/13 lane fit inside the row: thinner lanes, smaller text
+
+  // the 9 tasks of Wed 10/14 fit inside the row: thinner lanes, smaller text
   const metrics = monthCellMetrics(m.layout.scale);
-  const lm = monthView.allDayLaneMetrics(10, metrics);
+  const lm = monthView.allDayLaneMetrics(9, metrics);
   assert.ok(lm.fontScale < 1);
-  assert.ok(metrics.headerLu + 10 * lm.step - metrics.gapLu <= 175 - 2 + 1e-6);
-  const rowTop = 2 * 175; // 10/14 is in the third row
-  for (const b of bars.filter((x) => x.textContent.startsWith('タスク'))) {
-    const top = parseFloat(b.style.top) / 100 * 1050;
-    const bottom = top + parseFloat(b.style.height) / 100 * 1050;
-    assert.ok(top >= rowTop && bottom <= rowTop + 175 + 1e-6, 'bar stays inside its row');
+  assert.ok(metrics.headerLu + 9 * lm.step - lm.gapLu <= MONTH_CELL_H - 2 + 1e-6);
+  const rowTop = 2 * MONTH_CELL_H; // 10/14 is in the third row
+  const taskBars = bars.filter((x) => x.textContent.startsWith('タスク'));
+  for (const b of taskBars) {
+    const box = barBox(b);
+    assert.ok(box.top >= rowTop && box.bottom <= rowTop + MONTH_CELL_H - 2 + LU_EPS, 'bar stays inside its row');
+    assert.ok(Math.abs(box.height - lm.laneLu) < LU_EPS);
+    assert.ok(b.className.includes('is-thin'), 'thin enough to need the day view');
   }
+  // …but the trip's Mon–Tue part in the same week is not linked to Wednesday: full size, not thin
+  const tripBox = barBox(tripBars[1]);
+  assert.ok(Math.abs(tripBox.height - metrics.chipLu) < LU_EPS);
+  assert.ok(Math.abs(tripBox.top - (rowTop + metrics.headerLu)) < LU_EPS);
+  assert.ok(!tripBars[1].className.includes('is-thin'));
+  assert.equal(tripBars[1].style.getPropertyValue('--mc-bar-k'), '');
+
   // the timed event of that day cannot fit any more: '+1件' next to the date number
   const idx = range.days.findIndex((x) => x.getTime() === at(2026, 10, 14).getTime());
   const cell = m.eventsEl.findAll('mc')[idx];
   const badge = cell.findAll('mc-more')[0];
   assert.equal(badge.textContent, '+1件');
   assert.ok(badge.className.includes('is-badge'));
-  bars[0].fire('click', { pointerType: 'mouse' });
-  assert.equal(tapped.length, 1);
+
+  // taps: a full-size bar opens its event, also with a finger
+  tripBars[1].fire('click', { pointerType: 'touch' });
+  assert.equal(tapped.at(-1), trip);
+  tripBars[0].fire('click', { pointerType: 'mouse' });
+  assert.equal(tapped.length, 2);
+  assert.equal(days.length, 0);
+  // a thin bar is no finger target: finger / mouse open the day under it, the keyboard the event,
+  // the Pencil does nothing
+  const task = taskBars[3];
+  task.fire('click', { pointerType: 'touch', clientX: 10 });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].getTime(), at(2026, 10, 14).getTime());
+  task.fire('click', { pointerType: 'mouse' });
+  assert.equal(days.length, 2);
+  assert.equal(tapped.length, 2, 'no event dialog from a thin bar tap');
+  task.fire('click', { pointerType: 'pen' });
+  assert.equal(days.length, 2);
+  assert.equal(tapped.length, 2);
+  const key = task.fire('keydown', { key: 'Enter' });
+  assert.ok(key.defaultPrevented);
+  assert.equal(tapped.length, 3);
+  assert.equal(tapped.at(-1).title, task.textContent);
+
+  // labels name the days of the bar (each part of a split event gets its own), thin ones the day view
+  assert.equal(tripBars[0].getAttribute('aria-label'), '旅行、終日、2026年10月9日(金)〜2026年10月11日(日)');
+  assert.equal(tripBars[1].getAttribute('aria-label'), '旅行、終日、2026年10月12日(月)〜2026年10月13日(火)');
+  assert.equal(task.getAttribute('aria-label'), `${task.textContent}、終日、2026年10月14日(水)（日表示へ）`);
+  assert.equal(task.getAttribute('role'), 'button');
 }));
+
+test('month: each week row\'s bars follow that row\'s 7 cells in the DOM, in column order', () => withDom((doc) => {
+  const m = mountPage(doc, 'month', PAGE_SPECS.month, 820, 900);
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1); // 9/28 .. 11/8
+  const events = [
+    ev(at(2026, 10, 9), at(2026, 10, 14), { allDay: true, title: '旅行' }), // rows 1 and 2
+    ev(at(2026, 10, 16), at(2026, 10, 17), { allDay: true, title: '金曜' }), // row 2, col 4
+    ev(at(2026, 10, 12), at(2026, 10, 13), { allDay: true, title: '月曜' }), // row 2, col 0 (lane 1)
+    ev(at(2026, 11, 7), at(2026, 11, 8), { allDay: true, title: '最終週' }), // row 5
+  ];
+  monthView.render({ ...m, date, range, events, settings: { weekStart: 1 }, now: at(2026, 10, 4, 10) });
+  const kids = m.eventsEl.childNodes;
+  let cellsSeen = 0;
+  const order = [];
+  for (const k of kids) {
+    if (k.classList.contains('mc')) { cellsSeen += 1; continue; }
+    assert.ok(k.classList.contains('mc-bar'));
+    assert.equal(cellsSeen % 7, 0, 'bars only between week rows');
+    const row = Math.floor((barBox(k).top + LU_EPS) / MONTH_CELL_H);
+    assert.equal(row, cellsSeen / 7 - 1, 'a bar comes right after its own row\'s cells');
+    order.push(k.textContent);
+  }
+  assert.equal(cellsSeen, 42);
+  assert.deepEqual(order, ['旅行', '旅行', '月曜', '金曜', '最終週']);
+}));
+
+test('month: lanes thin per group of linked days — the rest of the week keeps full-size bars (landscape iPad)', () => withDom((doc) => {
+  const m = mountPage(doc, 'month', PAGE_SPECS.month, 1180, 700); // scale ≈ 0.667
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1); // row 4: Mon 10/26 .. Sun 11/1
+  const tasks = Array.from({ length: 12 }, (_, i) => ev(at(2026, 10, 28), at(2026, 10, 29), { allDay: true, title: `タスク${i + 1}` }));
+  const linked = ev(at(2026, 10, 27), at(2026, 10, 29), { allDay: true, title: '火水' }); // Tue–Wed: shares Wednesday
+  const trip = ev(at(2026, 10, 30), at(2026, 11, 2), { allDay: true, title: '旅行' }); // Fri–Sun
+  const monTimed = ev(at(2026, 10, 26, 9), at(2026, 10, 26, 10), { title: '月の会議' });
+  const tueTimed = ev(at(2026, 10, 27, 9), at(2026, 10, 27, 10), { title: '火の会議' });
+  const friTimed = ev(at(2026, 10, 30, 10), at(2026, 10, 30, 11), { title: '金の会議' });
+  monthView.render({
+    ...m, date, range, events: [...tasks, linked, trip, monTimed, tueTimed, friTimed], settings: { weekStart: 1 },
+    now: at(2026, 10, 4, 10),
+  });
+  const metrics = monthCellMetrics(m.layout.scale);
+  const bars = m.eventsEl.findAll('mc-bar');
+  assert.equal(bars.length, 14);
+  const rowTop = 4 * MONTH_CELL_H;
+  const busy = monthView.allDayLaneMetrics(13, metrics); // 火水 + 12 tasks
+  assert.ok(busy.fontScale < 1);
+
+  // the trip on Fri–Sun is not linked to Wednesday: full height, first lane, full-size text
+  const tripBar = bars.find((b) => b.textContent === '旅行');
+  const tb = barBox(tripBar);
+  assert.ok(Math.abs(tb.height - metrics.chipLu) < LU_EPS);
+  assert.ok(Math.abs(tb.top - (rowTop + metrics.headerLu)) < LU_EPS);
+  assert.equal(tripBar.style.getPropertyValue('--mc-bar-k'), '');
+  assert.ok(!tripBar.className.includes('is-thin'));
+
+  // the Tue–Wed bar shares Wednesday: it is thinned with the tasks (same lanes, no overlap)
+  for (const b of bars.filter((x) => x !== tripBar)) {
+    const box = barBox(b);
+    assert.ok(Math.abs(box.height - busy.laneLu) < LU_EPS, `${b.textContent} thinned with its group`);
+    assert.ok(box.bottom <= rowTop + MONTH_CELL_H - 2 + LU_EPS);
+    assert.ok(b.className.includes('is-thin'));
+  }
+  const busyBoxes = bars.filter((x) => x !== tripBar).map(barBox).sort((p, q) => p.top - q.top);
+  for (let i = 1; i < busyBoxes.length; i++) assert.ok(busyBoxes[i].top >= busyBoxes[i - 1].bottom - LU_EPS, 'lanes do not overlap');
+
+  // timed chips sit below the lanes of their own day
+  const cells = m.eventsEl.findAll('mc');
+  const cellOf = (d) => cells[range.days.findIndex((x) => x.getTime() === d.getTime())];
+  const chipTop = (d) => parseFloat(cellOf(d).findAll('mc-chip')[0].style.top);
+  assert.ok(Math.abs(chipTop(at(2026, 10, 26)) - pct(metrics.headerLu, MONTH_CELL_H)) < 1e-3, 'no bars on Monday');
+  assert.ok(Math.abs(chipTop(at(2026, 10, 27)) - pct(metrics.headerLu + busy.step, MONTH_CELL_H)) < 1e-3, 'one thin lane on Tuesday');
+  assert.ok(Math.abs(chipTop(at(2026, 10, 30)) - pct(metrics.headerLu + metrics.chipLu + metrics.gapLu, MONTH_CELL_H)) < 1e-3,
+    'one full lane on Friday');
+}));
+
+test('month: a thin multi-day bar opens the day under the finger; large screens keep event taps', () => withDom((doc) => {
+  const m = mountPage(doc, 'month', PAGE_SPECS.month, 820, 900);
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1);
+  const tasks = Array.from({ length: 9 }, (_, i) => ev(at(2026, 10, 14), at(2026, 10, 15), { allDay: true, title: `タスク${i + 1}` }));
+  const course = ev(at(2026, 10, 13), at(2026, 10, 16), { allDay: true, title: '研修' }); // Tue 10/13 .. Thu 10/15
+  const tapped = [];
+  const days = [];
+  const params = {
+    ...m, date, range, events: [...tasks, course], settings: { weekStart: 1 }, now: at(2026, 10, 4, 10),
+    onEventTap: (e) => tapped.push(e), onDayTap: (d) => days.push(d),
+  };
+  monthView.render(params);
+  const bar = m.eventsEl.findAll('mc-bar').find((b) => b.textContent === '研修');
+  assert.ok(bar.className.includes('is-thin'));
+  assert.equal(bar.getAttribute('aria-label'), '研修、終日、2026年10月13日(火)〜2026年10月15日(木)（日表示へ）');
+  const tapAt = (t) => {
+    bar.fire('click', { pointerType: 'touch', clientX: 100 + 300 * t });
+    return days.at(-1).getDate();
+  };
+  // without a box (no layout yet) the bar's first day
+  bar.fire('click', { pointerType: 'touch', clientX: 50 });
+  assert.equal(days.at(-1).getDate(), 13);
+  bar.getBoundingClientRect = () => ({ left: 100, top: 0, width: 300, height: 4, right: 400, bottom: 4 });
+  assert.equal(tapAt(0.1), 13);
+  assert.equal(tapAt(0.5), 14);
+  assert.equal(tapAt(0.9), 15);
+  assert.equal(tapAt(1.3), 15, 'clamped to the bar');
+  assert.equal(tapAt(-0.2), 13, 'clamped to the bar');
+  assert.equal(tapped.length, 0);
+
+  // a large screen: the same rows are thinned but still tall on screen, so taps open the event
+  withDom((doc2) => {
+    const big = mountPage(doc2, 'month', PAGE_SPECS.month, 2800, 2100); // scale 2
+    monthView.render({ ...params, ...big });
+    const metrics = monthCellMetrics(big.layout.scale);
+    const lm = monthView.allDayLaneMetrics(10, metrics);
+    assert.ok(lm.fontScale < 1 && lm.laneLu * big.layout.scale >= 16);
+    const b = big.eventsEl.findAll('mc-bar').find((x) => x.textContent === '研修');
+    assert.ok(!b.className.includes('is-thin'));
+    assert.ok(!b.getAttribute('aria-label').includes('日表示'));
+    b.fire('click', { pointerType: 'touch' });
+    assert.equal(tapped.at(-1), course);
+  });
+}));
+
+test('month: 65 all-day events on one day stay inside their week row', () => withDom((doc) => {
+  const m = mountPage(doc, 'month', PAGE_SPECS.month, 1180, 700);
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1);
+  const lots = Array.from({ length: 65 }, (_, i) => ev(at(2026, 10, 27), at(2026, 10, 28), { allDay: true, title: `予定${i}` }));
+  const last = Array.from({ length: 65 }, (_, i) => ev(at(2026, 11, 8), at(2026, 11, 9), { allDay: true, title: `最終${i}` }));
+  monthView.render({ ...m, date, range, events: [...lots, ...last], settings: { weekStart: 1 }, now: at(2026, 10, 4, 10) });
+  const bars = m.eventsEl.findAll('mc-bar');
+  assert.equal(bars.length, 130, 'none hidden');
+  for (const b of bars) {
+    const row = b.textContent.startsWith('最終') ? 5 : 4;
+    const box = barBox(b);
+    assert.ok(box.height > 0);
+    assert.ok(box.top >= row * MONTH_CELL_H + LU_EPS * -1);
+    assert.ok(box.bottom <= (row + 1) * MONTH_CELL_H - 2 + LU_EPS, `${b.textContent} stays above the next row / the page bottom`);
+  }
+}));
+
+test('allDayLaneMetrics: the lanes always fit the cell, with no minimum size, for 1..100 lanes', () => {
+  for (const scale of [0.3, 0.5857, 2 / 3, 1, 2]) {
+    const metrics = monthCellMetrics(scale);
+    const avail = MONTH_CELL_H - metrics.headerLu - 2;
+    let prev = Infinity;
+    for (let n = 1; n <= 100; n++) {
+      const lm = monthView.allDayLaneMetrics(n, metrics);
+      assert.ok(n * lm.step - lm.gapLu <= avail + 1e-9, `scale ${scale}, ${n} lanes fit`);
+      assert.ok(lm.laneLu > 0 && lm.gapLu > 0 && lm.gapLu <= metrics.gapLu);
+      assert.ok(Math.abs(lm.step - (lm.laneLu + lm.gapLu)) < 1e-9);
+      assert.ok(lm.gapLu <= lm.step / 3 + 1e-9 || lm.gapLu === metrics.gapLu);
+      assert.ok(lm.fontScale > 0 && lm.fontScale <= 1);
+      assert.ok(Math.abs(lm.fontScale - Math.min(1, lm.laneLu / metrics.chipLu)) < 1e-12);
+      assert.ok(lm.laneLu <= prev + 1e-12, 'more lanes are never taller');
+      prev = lm.laneLu;
+      if (n * (metrics.chipLu + metrics.gapLu) - metrics.gapLu <= avail) {
+        assert.deepEqual([lm.laneLu, lm.gapLu, lm.fontScale], [metrics.chipLu, metrics.gapLu, 1], 'full size when they fit');
+      } else {
+        assert.ok(Math.abs(n * lm.step - lm.gapLu - avail) < 1e-9, 'thinned lanes use the whole space');
+      }
+    }
+  }
+  const zero = monthView.allDayLaneMetrics(0, monthCellMetrics(0.6));
+  assert.equal(zero.fontScale, 1);
+});
+
+test('allDayColumnGroups: runs of columns linked by bars, in column order', async () => {
+  assert.deepEqual(monthView.allDayColumnGroups([]), []);
+  assert.deepEqual(monthView.allDayColumnGroups(null), []);
+  const a = { startCol: 0, endCol: 1, row: 0 };
+  const b = { startCol: 1, endCol: 2, row: 1 };
+  const c = { startCol: 3, endCol: 3, row: 0 };
+  const d = { startCol: 4, endCol: 6, row: 0 };
+  const e = { startCol: 5, endCol: 5, row: 1 };
+  assert.deepEqual(monthView.allDayColumnGroups([d, c, a, e, b]), [[a, b], [c], [d, e]]);
+  const long = { startCol: 0, endCol: 6, row: 0 };
+  assert.deepEqual(monthView.allDayColumnGroups([c, long, a]), [[long, a, c]]);
+
+  // with the real lane layout: groups never share a column, and each group's lanes are 0..k-1
+  const { allDayRowsForRange } = await import('../js/views/event-layout.js');
+  const week = Array.from({ length: 7 }, (_, i) => at(2026, 10, 12 + i));
+  let seed = 7;
+  const rnd = (k) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % k; };
+  for (let trial = 0; trial < 300; trial++) {
+    const evs = Array.from({ length: 1 + rnd(14) }, () => {
+      const s = rnd(9) - 1; // may start before the week
+      return ev(at(2026, 10, 12 + s), at(2026, 10, 13 + s + rnd(4)), { allDay: true });
+    });
+    const items = allDayRowsForRange(evs, week);
+    const groups = monthView.allDayColumnGroups(items);
+    assert.equal(groups.flat().length, items.length);
+    const owner = new Array(7).fill(-1);
+    groups.forEach((g, gi) => {
+      const rows = new Set(g.map((it) => it.row));
+      const k = Math.max(...rows) + 1;
+      assert.equal(rows.size, k, 'lanes of a group start at 0 and have no holes');
+      for (const it of g) {
+        for (let col = it.startCol; col <= it.endCol; col++) {
+          assert.ok(owner[col] === -1 || owner[col] === gi, 'groups never share a column');
+          owner[col] = gi;
+        }
+      }
+    });
+  }
+});
 
 test('month layout helpers: lanes keep their size when they fit; timed chips use the space below', () => {
   const metrics = monthCellMetrics(0.6);

@@ -9,6 +9,7 @@ import {
 import { ApiError, AuthRequiredError } from '../js/google/http.js';
 
 const d = (y, m, day, h = 0, mi = 0) => new Date(y, m - 1, day, h, mi);
+const toYMDLocal = (t) => `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
 const HOLIDAY_ID = 'ja.japanese#holiday@group.v.calendar.google.com';
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 // Tests whose expected strings are +09:00 literals only run in Asia/Tokyo (npm test sets TZ); the rest
@@ -562,8 +563,8 @@ function memoryStorage(initial = {}) {
   };
 }
 
-const NOW = d(2026, 10, 7, 10); // Wednesday; the week starts Sunday 2026-10-04
-const WEEK = [d(2026, 10, 4), d(2026, 10, 11)];
+const NOW = d(2026, 10, 7, 10); // Wednesday; the (Monday-start) week is 2026-10-05 .. 10-11
+const WEEK = [d(2026, 10, 5), d(2026, 10, 12)];
 
 test('demo calendars', async () => {
   const src = createDemoCalendarSource({ storage: memoryStorage(), now: () => NOW.getTime() });
@@ -609,8 +610,31 @@ test('demo seed: deterministic sample week with timed, all-day, 2-day and overla
   // sorted
   for (let i = 1; i < evA.length; i++) assert.ok(evA[i - 1].start <= evA[i].start);
   // other weeks have a few events too (weekly meeting)
-  const next = await a.listEvents(ids, d(2026, 10, 11), d(2026, 10, 18));
+  const next = await a.listEvents(ids, d(2026, 10, 12), d(2026, 10, 19));
   assert.ok(next.some((e) => e.title === '週次定例'));
+});
+
+test('demo seed fills the Monday-start week shown first, also when started on a Sunday', async () => {
+  const ids = ['demo-main', 'demo-work', 'demo-family'];
+  const all = async (now) => createDemoCalendarSource({ storage: null, now }).listEvents(ids, d(2026, 9, 1), d(2026, 11, 30));
+  const inWeek = (events, monday) => events.filter((e) => e.start >= monday && e.start < d(2026, monday.getMonth() + 1, monday.getDate() + 7));
+  // Started on Sunday 2026-10-04: the week page shows Mon 9/28 .. Sun 10/4
+  const sunday = await all(d(2026, 10, 4, 9));
+  const shown = inWeek(sunday, d(2026, 9, 28));
+  assert.equal(shown.length, 13, 'every sample of the current week, on the visible page');
+  assert.ok(shown.some((e) => e.allDay && e.title === '資料提出日'));
+  assert.ok(shown.some((e) => e.allDay && e.title === '家族旅行'));
+  const at = (events, title) => events.find((e) => e.title === title).start;
+  assert.equal(at(shown, '週次定例').getDay(), 1, 'Monday');
+  assert.equal(at(shown, '買い物').getDay(), 0, 'Sunday, the last day of the week');
+  assert.equal(toYMDLocal(at(shown, '買い物')), '2026-10-04');
+  assert.equal(toYMDLocal(at(shown, '手書きカレンダーを試す')), '2026-10-04', 'today');
+  // Started on a Monday or a Wednesday of the same week: the same dates
+  const monday = await all(d(2026, 9, 28, 9));
+  const wednesday = await all(d(2026, 9, 30, 9));
+  const dates = (events) => events.filter((e) => e.id !== 'demo-try-today').map((e) => `${e.id} ${e.start.getTime()}`);
+  assert.deepEqual(dates(monday), dates(sunday));
+  assert.deepEqual(dates(wednesday), dates(sunday));
 });
 
 test('demo seed is persisted and reloaded as-is', async () => {

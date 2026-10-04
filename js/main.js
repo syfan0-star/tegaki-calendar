@@ -37,8 +37,10 @@ import { createDriveApi } from './google/drive.js';
 import { createGoogleCalendarSource, createDemoCalendarSource, newEventId } from './data/calendar-source.js';
 import { createInkStore } from './data/ink-store.js';
 import { openKV } from './util/idb.js';
-import { addStrokes, emptyPage, mergePages, sameContent } from './ink/model.js';
-import { legacySourcesFor, legacyStrokesFor } from './ink/legacy-week-start.js';
+import { emptyPage, mergePages, sameContent } from './ink/model.js';
+import {
+  legacySourcesFor, mergeLegacyInk, createLegacyCarryQueue, legacyDoneKey, legacyDoneFlagCounts, LEGACY_DONE_PREFIX,
+} from './ink/legacy-week-start.js';
 import { PEN_SIZES, HIGHLIGHTER_SIZE } from './ink/render.js';
 import { InkSurface } from './ink/surface.js';
 import {
@@ -84,7 +86,7 @@ const LEGACY_DEMO_CHECKED_KEY = 'legacyDemoChecked'; // kv (Google database): ol
 const DEMO_CARRY_KEY = 'carryOver';            // kv (demo database): 'imported' | 'declined'
 const EVENTS_KV_PREFIX = 'events:';            // kv: 'events:<cacheId>' → last fetched events of a page
 const EVENTS_INDEX_KEY = 'eventsIndex';        // kv: LRU list of the cacheIds above
-const ACCOUNT_DATA_PREFIXES = ['page:', 'own:', 'seen:', EVENTS_KV_PREFIX];
+const ACCOUNT_DATA_PREFIXES = ['page:', 'own:', 'seen:', EVENTS_KV_PREFIX, LEGACY_DONE_PREFIX];
 const DEMO_DB_NOTE = 'お試しモードの手書きは、このアプリ（このブラウザ）の中だけに保存されます';
 const TAB_STORAGE_WARNING = 'Safariのタブで書いた手書きは、ホーム画面に追加したアプリには引き継がれません。'
   + '先にホーム画面に追加してから使ってください（Safariでしばらく開かないと消えることもあります）';
@@ -728,7 +730,9 @@ function attachInkDrive() {
     warn('setDrive failed', describe(err));
     return;
   }
-  if (S.page) refreshPageInk(S.page);
+  // Ink of the old Sunday-start pages may be on Drive only: copy it now, not only on the next visit.
+  const p = S.page;
+  if (p) refreshPageInk(p).finally(() => carryLegacyInk(p));
 }
 
 /**
@@ -1443,40 +1447,38 @@ async function loadPageInk(p) {
 
 /**
  * Handwriting from before 1.0.4 on Sunday-start week / month pages (see ink/legacy-week-start.js) is
- * copied onto this Monday-start page, on the same dates. Marked done per page once the old pages were
- * read both locally and from Drive (お試しモード: locally), so later visits cost nothing.
+ * copied onto this Monday-start page, on the same dates; copies of strokes since erased (or moved) on the
+ * old pages are erased. Until LEGACY_RECHECK_UNTIL this runs on every visit (devices on an older version may
+ * still write on the old pages). After it, a page marked done is skipped; done needs every old page read
+ * both locally and from Drive (お試しモード: locally). One run at a time per page (createLegacyCarryQueue).
  */
-async function carryLegacyInk(p) {
+const carryLegacyInk = createLegacyCarryQueue(carryLegacyInkOnce);
+
+async function carryLegacyInkOnce(p) {
   const sources = legacySourcesFor(p.pageId);
   if (!sources.length || !S.inkStore || !S.kv) return;
-  const doneKey = `legacyWeekStart:${p.pageId}`;
+  const doneKey = legacyDoneKey(p.pageId);
   try {
-    if (await S.kv.get(doneKey)) return;
+    if (legacyDoneFlagCounts() && await S.kv.get(doneKey)) return;
     const docs = new Map();
-    let refreshFailed = false;
+    let remoteRead = true;
     for (const id of sources) {
-      try {
-        await S.inkStore.refresh(id); // merges the Drive copies of the old page into the local one
-      } catch (err) {
-        refreshFailed = true;
-        warn('legacy ink refresh failed', describe(err));
-      }
+      await S.inkStore.refresh(id); // merges the Drive copies of the old page into the local one
+      // refresh() reports a failed pull only through the shared status, which a later success clears:
+      // check it after every page. Anything but 'synced' (no Drive yet, offline, unsent ink…) → read again later.
+      if (S.mode !== 'demo' && S.inkStore.getStatus() !== 'synced') remoteRead = false;
       docs.set(id, await S.inkStore.load(id));
     }
-    // refresh() also reports failures through the status; anything but 'synced' means "try again later".
-    const remoteRead = S.mode === 'demo' || (!refreshFailed && S.inkStore.getStatus() === 'synced');
+    if (sources.some((id) => S.inkStore.isUnreadable?.(id))) remoteRead = false; // stored copy not read
     if (S.page !== p || !p.loaded || !S.surface) return; // navigated away: the next visit copies them
-    const strokes = legacyStrokesFor(p.pageId, docs);
-    if (strokes.length) {
-      const current = S.surface.getDoc();
-      if (!current || current.pageId !== p.pageId) return;
-      const merged = addStrokes(current, strokes); // copies already there (or erased) are skipped
-      if (!sameContent(current, merged)) {
-        S.surface.setDoc(merged, { resetHistory: false });
-        updateToolbar();
-        // Persist before marking the page done: on an empty page the copies exist nowhere else yet.
-        await S.inkStore.save(p.pageId, merged);
-      }
+    const current = S.surface.getDoc();
+    if (!current || current.pageId !== p.pageId) return;
+    const merged = mergeLegacyInk(p.pageId, current, docs); // copies already there (or erased) are skipped
+    if (!sameContent(current, merged)) {
+      S.surface.setDoc(merged, { resetHistory: false });
+      updateToolbar();
+      // Persist before marking the page done: on an empty page the copies exist nowhere else yet.
+      await track(S.inkStore.save(p.pageId, merged));
     }
     if (remoteRead) await S.kv.set(doneKey, true);
   } catch (err) {

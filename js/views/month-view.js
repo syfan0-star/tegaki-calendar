@@ -1,8 +1,11 @@
 // Month page (module F1): a 7×6 grid of day cells. Each cell shows its date number and holiday name.
 // All-day events are bars spanning their days in each week row (like Google Calendar) and are ALWAYS
-// all shown: when a row has many, its lanes get thinner instead of hiding any. Timed events follow as
-// one-line chips, as many as fit in the top ~60% of the cell (the rest: '+n件'), so the lower part
-// stays free for handwriting. The sticky header shows the weekday labels aligned with the columns.
+// all shown: where days have many, the lanes of those days get thinner instead of hiding any (only
+// the days linked to the busy one by bars; the rest of the week keeps full-size bars). A thinned bar
+// is too small for a finger, so a tap on it opens that day's page, where every event is large.
+// Timed events follow as one-line chips, as many as fit in the top ~60% of the cell (the rest:
+// '+n件'), so the lower part stays free for handwriting. The sticky header shows the weekday labels
+// aligned with the columns.
 
 import { PAGE_SPECS, monthCellRect, rangeFor } from './page-geometry.js';
 import { allDayRowsForRange, eventsOnDay } from './event-layout.js';
@@ -96,20 +99,55 @@ function eventChip(ev, day, onEventTap) {
 const BAR_INSET = 4;
 /** Free space kept under the last all-day lane (lu). */
 const BAR_BOTTOM_PAD = 2;
+/**
+ * On-screen height (CSS px) below which a thinned all-day bar is no reliable finger target: a tap on
+ * it opens the day under the finger instead of one event (neighbours are only ~1px away).
+ */
+const THIN_BAR_PX = 16;
 
 /**
- * Lane metrics of one week row. Every lane must fit between the date header and the cell bottom:
- * with too many lanes they get thinner (and their text smaller) — all-day events are never hidden.
- * @returns {{ laneLu: number, step: number, fontScale: number }}
+ * Lane metrics of one group of all-day lanes. Every lane must fit between the date header and the
+ * cell bottom: with too many lanes they get thinner (and their text smaller), and when the lanes get
+ * very thin the gaps too (at most a third of a step) — all-day events are never hidden, and the stack
+ * never reaches the next week row: laneCount × step − gapLu ≤ the space below the header. No minimum
+ * size: a floor would push the last lanes out of the cell.
+ * @returns {{ laneLu: number, step: number, gapLu: number, fontScale: number }}
  */
 export function allDayLaneMetrics(laneCount, m, cellH = CELL_H) {
   const gap = m.gapLu;
-  const avail = cellH - m.headerLu - BAR_BOTTOM_PAD;
+  const avail = Math.max(0, cellH - m.headerLu - BAR_BOTTOM_PAD);
   let lane = m.chipLu;
+  let g = gap;
   if (laneCount > 0 && laneCount * (lane + gap) - gap > avail) {
-    lane = Math.max(1, (avail + gap) / laneCount - gap);
+    // n·step − g = avail, with g = min(gap, step / 3).
+    let step = (avail + gap) / laneCount;
+    if (step < 3 * gap) {
+      step = avail / (laneCount - 1 / 3);
+      g = step / 3;
+    }
+    lane = step - g;
   }
-  return { laneLu: lane, step: lane + gap, fontScale: Math.min(1, lane / m.chipLu) };
+  return { laneLu: lane, step: lane + g, gapLu: g, fontScale: Math.min(1, lane / m.chipLu) };
+}
+
+/**
+ * Splits the all-day bars of a week row into groups of columns linked by overlapping bars (maximal
+ * runs of columns; a new group starts where no earlier bar reaches). Each group gets its own lane
+ * size, and bars of different groups never share a column. Groups and their bars in column order.
+ * @param {{ startCol: number, endCol: number, row: number }[]} items  from allDayRowsForRange
+ * @returns {object[][]}
+ */
+export function allDayColumnGroups(items) {
+  const sorted = (Array.isArray(items) ? items.filter(Boolean) : [])
+    .sort((p, q) => (p.startCol - q.startCol) || (p.row - q.row));
+  const groups = [];
+  let maxEnd = -Infinity;
+  for (const it of sorted) {
+    if (it.startCol > maxEnd) groups.push([]);
+    groups[groups.length - 1].push(it);
+    maxEnd = Math.max(maxEnd, it.endCol);
+  }
+  return groups;
 }
 
 /**
@@ -176,19 +214,49 @@ function buildCell(ctx, c, m, lanesUsed, laneStep) {
   return cell;
 }
 
-/** One all-day bar of a week row (spanning startCol..endCol of that row). */
+/**
+ * Day of a week row under a tap on an all-day bar: from the tap's x within the bar's box (the bar is
+ * inset by BAR_INSET at both ends). The bar's first day when the point or the box is unknown.
+ */
+function dayUnderTap(bar, e, it, rowCells) {
+  let col = it.startCol;
+  try {
+    const r = bar.getBoundingClientRect();
+    const x = Number(e?.clientX);
+    if (r && r.width > 0 && Number.isFinite(x)) {
+      const w = (it.endCol - it.startCol + 1) * CELL_W - 2 * BAR_INSET;
+      const lu = it.startCol * CELL_W + BAR_INSET + ((x - r.left) / r.width) * w;
+      col = Math.min(it.endCol, Math.max(it.startCol, Math.floor(lu / CELL_W)));
+    }
+  } catch {
+    col = it.startCol;
+  }
+  return rowCells[col].date;
+}
+
+/**
+ * One all-day bar of a week row (spanning startCol..endCol of that row), sized by its group's lane
+ * metrics `lm`. A thinned bar below THIN_BAR_PX on screen is no reliable finger target: a click on it
+ * (finger or mouse) opens the day under the tap point; Enter/Space still open the event. Pencil taps
+ * are ignored as on every chip (the 予定 tool finds events itself).
+ */
 function allDayBar(ctx, it, rowIndex, rowCells, m, lm) {
   const ev = it.event;
   const first = rowCells[it.startCol];
   const last = rowCells[it.endCol];
+  // Full-size bars are as tall as the timed chips (the month page's normal tap target); only bars
+  // thinned below that AND below THIN_BAR_PX count as thin.
+  const thin = lm.laneLu < m.chipLu && lm.laneLu * ctx.scale < THIN_BAR_PX;
   const cls = ['mc-bar'];
   if (ev.start.getTime() < first.date.getTime()) cls.push('cont-left');
   if (ev.end.getTime() > addDays(last.date, 1).getTime()) cls.push('cont-right');
   if (rowCells.slice(it.startCol, it.endCol + 1).every((c) => !c.inMonth)) cls.push('is-out');
+  if (thin) cls.push('is-thin');
   const bar = htmlEl('div', cls.join(' '));
   bar.dataset.eventId = String(ev.id ?? '');
   bar.dataset.calendarId = String(ev.calendarId ?? '');
-  bar.setAttribute('aria-label', eventAriaLabel(ev));
+  const dates = `${formatDateJa(first.date)}${it.endCol > it.startCol ? `〜${formatDateJa(last.date)}` : ''}`;
+  bar.setAttribute('aria-label', `${eventAriaLabel(ev)}、${dates}${thin ? '（日表示へ）' : ''}`);
   bar.append(htmlEl('span', 'mc-bar-title', eventTitle(ev)));
   const x = it.startCol * CELL_W + BAR_INSET;
   const w = (it.endCol - it.startCol + 1) * CELL_W - 2 * BAR_INSET;
@@ -196,22 +264,35 @@ function allDayBar(ctx, it, rowIndex, rowCells, m, lm) {
   bar.style.cssText = `left:${pct(x, SPEC.W)}%;top:${pct(y, SPEC.H)}%;width:${pct(w, SPEC.W)}%;`
     + `height:${pct(lm.laneLu, SPEC.H)}%;${eventColorVars(ev, 1)}`
     + (lm.fontScale < 1 ? `--mc-bar-k:${Math.round(lm.fontScale * 1000) / 1000};` : '');
-  onActivate(bar, () => ctx.onEventTap(ev), { ignorePen: true });
+  onActivate(bar, (e) => {
+    if (thin && e?.type !== 'keydown') ctx.onDayTap(dayUnderTap(bar, e, it, rowCells));
+    else ctx.onEventTap(ev);
+  }, { ignorePen: true });
   return bar;
 }
 
-/** All-day bars of one week row + how many lanes each of its 7 days uses. */
+/**
+ * All-day bars of one week row (in column order), and per day column how many lanes it uses and the
+ * step of those lanes. Lanes are thinned per group of columns linked by bars, not for the whole row:
+ * a day with many all-day events only thins the bars that share its columns (directly or through
+ * other bars). Columns without bars keep the normal step for the timed chips below.
+ */
 function buildRow(ctx, rowIndex, rowCells, m) {
   const items = safeCall(() => allDayRowsForRange(ctx.events, rowCells.map((c) => c.date)), []);
-  const laneCount = items.reduce((mx, it) => Math.max(mx, it.row + 1), 0);
-  const lm = allDayLaneMetrics(laneCount, m);
   const lanesUsed = new Array(COLS).fill(0);
+  const laneStep = new Array(COLS).fill(m.chipLu + m.gapLu);
   const bars = [];
-  for (const it of items) {
-    for (let col = it.startCol; col <= it.endCol; col++) lanesUsed[col] = Math.max(lanesUsed[col], it.row + 1);
-    bars.push(allDayBar(ctx, it, rowIndex, rowCells, m, lm));
+  for (const group of allDayColumnGroups(items)) {
+    const lm = allDayLaneMetrics(group.reduce((mx, it) => Math.max(mx, it.row + 1), 0), m);
+    for (const it of group) {
+      for (let col = it.startCol; col <= it.endCol; col++) {
+        lanesUsed[col] = Math.max(lanesUsed[col], it.row + 1);
+        laneStep[col] = lm.step;
+      }
+      bars.push(allDayBar(ctx, it, rowIndex, rowCells, m, lm));
+    }
   }
-  return { bars, lanesUsed, laneStep: lm.step };
+  return { bars, lanesUsed, laneStep };
 }
 
 function buildCells(ctx, cells) {
@@ -222,14 +303,14 @@ function buildCells(ctx, cells) {
   st.setProperty('--mc-chip-fs', `${m.chipPx}px`);
   st.setProperty('--mc-hol-fs', `${m.holidayPx}px`);
   const frag = document.createDocumentFragment();
-  const bars = [];
   for (let row = 0; row < ROWS; row++) {
     const rowCells = cells.slice(row * COLS, row * COLS + COLS);
     const r = buildRow(ctx, row, rowCells, m);
-    for (const c of rowCells) frag.append(buildCell(ctx, c, m, r.lanesUsed[c.col], r.laneStep));
-    bars.push(...r.bars);
+    for (const c of rowCells) frag.append(buildCell(ctx, c, m, r.lanesUsed[c.col], r.laneStep[c.col]));
+    // The row's bars right after its 7 cells: above them (the cells clip their contents, so nothing
+    // of the next row reaches up here), and read by VoiceOver / Tab together with their week.
+    for (const bar of r.bars) frag.append(bar);
   }
-  for (const bar of bars) frag.append(bar); // above the cells
   ctx.eventsEl.replaceChildren(frag);
 }
 

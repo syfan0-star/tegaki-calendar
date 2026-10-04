@@ -590,8 +590,8 @@ const DEMO_CALENDARS = Object.freeze([
 })));
 
 /**
- * Sample events, relative to the Sunday that starts the current week.
- * week: weeks from the current week; day: 0 = Sunday … 6 = Saturday (may exceed 6);
+ * Sample events, relative to the current Monday-start week (the week page shown first).
+ * week: weeks from the current week; day: 1 = Monday … 7 = Sunday;
  * timed events have from/to minutes; all-day events have days (≥ 1).
  */
 const DEMO_SEED = [
@@ -609,7 +609,7 @@ const DEMO_SEED = [
   { key: 'gym', cal: 'demo-main', title: 'ジム', week: 0, day: 4, from: 1140, to: 1230 },
   { key: 'party', cal: 'demo-work', title: '歓迎会', week: 0, day: 5, from: 1110, to: 1260, location: '新宿' },
   { key: 'trip', cal: 'demo-family', title: '家族旅行', week: 0, day: 5, days: 2, location: '箱根' },
-  { key: 'shopping', cal: 'demo-family', title: '買い物', week: 0, day: 0, from: 600, to: 720 },
+  { key: 'shopping', cal: 'demo-family', title: '買い物', week: 0, day: 7, from: 600, to: 720 },
   { key: 'yoga', cal: 'demo-main', title: 'ヨガ', week: -1, day: 4, from: 1170, to: 1230 },
   { key: 'business-trip', cal: 'demo-work', title: '出張（大阪）', week: 1, day: 1, days: 2 },
   { key: 'birthday', cal: 'demo-family', title: 'おばあちゃんの誕生日', week: 1, day: 3, days: 1 },
@@ -628,11 +628,11 @@ function resolveNow(now) {
   return new Date();
 }
 
-/** Builds the deterministic sample events for the week containing `today`. */
+/** Builds the deterministic sample events for the Monday-start week containing `today`. */
 function seedDemoEvents(today) {
-  const weekStart = startOfWeek(today, 0);
+  const monday = startOfWeek(today, 1);
   const events = DEMO_SEED.map((s) => {
-    const day = addDays(weekStart, s.week * 7 + s.day);
+    const day = addDays(monday, s.week * 7 + s.day - 1);
     const base = {
       id: `demo-${s.key}`,
       calendarId: s.cal,
