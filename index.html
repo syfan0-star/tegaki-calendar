@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://www.googleapis.com https://oauth2.googleapis.com; manifest-src 'self'; worker-src 'self'">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="手書きカレンダー">
+  <meta name="application-name" content="手書きカレンダー">
+  <meta name="theme-color" content="#fffdf8">
+  <meta name="description" content="Googleカレンダーの予定に、Apple Pencil で手書きできる手帳アプリ">
+  <title>手書きカレンダー</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="stylesheet" href="styles/app.css">
+  <link rel="stylesheet" href="styles/views.css">
+  <style>
+    /* Boot splash (shown until js/main.js has started). Low specificity (:where) so styles/app.css can restyle it. */
+    :where(.boot-splash) {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+      background: #fffdf8; color: #4b5563;
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+      text-align: center; padding: 24px;
+    }
+    :where(.boot-splash img) { width: 72px; height: 72px; border-radius: 16px; }
+    :where(.boot-splash-hint) { opacity: 0; animation: boot-hint 0.3s ease 10s forwards; font-size: 13px; color: #6b7280; }
+    @keyframes boot-hint { to { opacity: 1; } }
+    :where(.boot-splash[hidden]) { display: none; }
+    /* Rescue buttons added by js/boot-watchdog.js when the app does not start. */
+    :where(.boot-splash-actions) { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 8px; }
+    :where(.boot-splash-button) { min-height: 44px; min-width: 220px; padding: 8px 18px; border-radius: 10px; border: 1px solid #d1d5db; background: #fff; color: #1f2937; font: inherit; }
+    :where(.boot-splash-button.btn-primary) { background: #2563eb; border-color: #2563eb; color: #fff; }
+    /* Leave shield (js/main.js): while the app is leaving (OAuth redirect, reload) no stroke can start. */
+    :where(.leave-shield) {
+      position: fixed; inset: 0; z-index: 2000;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(255, 253, 248, 0.55);
+      touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+      cursor: progress;
+    }
+    :where(.leave-shield-text) {
+      padding: 10px 18px; border-radius: 999px; background: rgba(31, 41, 55, 0.88); color: #fff;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+    }
+    :where(.leave-shield-text:empty) { display: none; }
+    /* Stale-tab overlay (js/main.js): another tab (window) of the app took over; only 再読み込み works. */
+    :where(.stale-overlay) { z-index: 2000; touch-action: none; -webkit-user-select: none; user-select: none; }
+    :where(.stale-overlay .boot-splash-detail) { font-size: 13px; color: #6b7280; max-width: 420px; }
+  </style>
+</head>
+<body>
+  <noscript>
+    <p style="padding:24px;font-size:16px;line-height:1.7">
+      手書きカレンダーを使うには JavaScript を有効にしてください。<br>
+      （iPad の場合：設定 → アプリ → Safari → 詳細 → JavaScript をオン）
+    </p>
+  </noscript>
+
+  <div id="app">
+    <header class="app-header"></header>
+    <div class="banner" role="status" aria-live="polite"></div>
+    <div class="sticky-header"></div>
+    <div class="viewport" aria-label="カレンダーのページ"></div>
+    <div class="toolbar" role="toolbar" aria-label="書く道具"></div>
+    <div class="selection-menu" role="menu" aria-label="選択した手書き"></div>
+    <div id="dialog-root"></div>
+  </div>
+
+  <div id="boot-splash" class="boot-splash" role="status" aria-live="polite">
+    <img src="icons/icon-192.png" alt="" width="72" height="72">
+    <div class="boot-splash-text">手書きカレンダーを読み込んでいます…</div>
+    <div class="boot-splash-hint">時間がかかっています。ネットワーク接続を確認してください。</div>
+  </div>
+
+  <!-- Classic script before the module: offers 再読み込み if js/main.js never starts (no reload button in a Home Screen app). -->
+  <script src="js/boot-watchdog.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

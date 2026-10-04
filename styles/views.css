@@ -1,0 +1,659 @@
+/* views.css — the paper page: grid, event boxes, month cells, sticky header (module F1).
+ *
+ * The page lives in logical units; sizes that must follow the page use calc(var(--s) * Npx)
+ * (--s = page scale, set on .page by applyPageScale). Font sizes that the JS also needs for fitting
+ * (--ev-fs, --mc-*) are computed once per render in view-common.js and passed in as custom properties.
+ * The page is always "paper" (light), also in dark mode.
+ */
+
+.page,
+.sticky-header {
+  --paper: #fffdf8;
+  --line: #e5e7eb;
+  --line-soft: #eceef1;
+  --line-strong: #d7dade;
+  --rule: #ebe7de;
+  --ink-1: #1f2937;
+  --ink-2: #4b5563;
+  --ink-3: #9ca3af;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --accent: #2563eb;
+  --today-tint: rgba(37, 99, 235, 0.06);
+  --today-tint-soft: rgba(37, 99, 235, 0.03);
+  --weekend-tint: rgba(146, 118, 64, 0.045);
+  --weekend-tint-soft: rgba(146, 118, 64, 0.03);
+  --out-tint: rgba(107, 114, 128, 0.055);
+}
+
+/* ---------------------------------------------------------------- page (ink host, SPEC §7) */
+
+.page {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  background: var(--paper);
+  color: var(--ink-1);
+  touch-action: pan-x pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Month: a sheet of paper centered in the viewport. Shadows do not affect layout. */
+.page[data-fit="contain"] {
+  box-shadow: 0 0 0 1px var(--line), 0 8px 28px rgba(31, 41, 55, 0.07);
+}
+
+.page > svg.grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.page > .events {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- grid (SVG) */
+
+.grid .g-hour,
+.grid .g-vline {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.grid .g-half {
+  fill: none;
+  stroke: var(--line-soft);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.grid .g-axis,
+.grid .g-sep {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.grid .g-rule {
+  fill: none;
+  stroke: var(--rule);
+  stroke-width: 1;
+}
+
+.grid .g-today { fill: var(--today-tint); }
+.grid .g-weekend { fill: var(--weekend-tint); }
+.grid .g-out { fill: var(--out-tint); }
+
+/* The day page is mostly one big column: keep its tints fainter so it still reads as paper. */
+.page[data-view="day"] .grid .g-today { fill: var(--today-tint-soft); }
+.page[data-view="day"] .grid .g-weekend { fill: var(--weekend-tint-soft); }
+
+.grid .g-label {
+  fill: var(--ink-3);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid .g-memo-label {
+  fill: #a8a29e;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+
+/* Current-time line: its own SVG overlay, last child of .events, so it is drawn ABOVE the event boxes
+   (an ongoing event's 85%-opaque box would hide it in the grid SVG). Same viewBox as the grid. */
+.events > svg.now-layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.page .g-now line {
+  stroke: var(--red);
+  stroke-width: 2;
+}
+
+.page .g-now circle { fill: var(--red); }
+
+/* ---------------------------------------------------------------- timed event boxes (day/week) */
+
+.events .event {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: auto;
+  cursor: pointer;
+  padding: max(1px, calc(var(--s, 1) * 3px)) max(3px, calc(var(--s, 1) * 6px));
+  border-left: 3px solid var(--ev, #039be5);
+  border-radius: 6px;
+  background: var(--ev-bg, rgba(3, 155, 229, 0.85));
+  color: var(--ev-fg, #fff);
+  box-shadow: 0 0 0 1px rgba(255, 253, 248, 0.9);
+  font-size: var(--ev-fs, max(10px, calc(var(--s, 1) * 13px)));
+  line-height: 1.25; /* keep in sync with EVENT_LINE_HEIGHT in view-common.js */
+}
+
+.events .event:active { filter: brightness(0.94); }
+.events .event:focus { outline: none; }
+.events .event:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.events .event.is-past { opacity: 0.75; }
+
+.event .ev-time {
+  overflow: hidden;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+}
+
+.event .ev-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.event .ev-loc {
+  overflow: hidden;
+  margin-top: 0.1em;
+  font-size: 0.85em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+}
+
+/* One-line layouts: 'compact' = start time + title, 'short' (< 30 min) = title only. */
+.event .ev-line {
+  overflow: hidden;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.event .ev-line .ev-time {
+  display: inline;
+  margin-right: 0.35em;
+}
+
+.event .ev-line .ev-title { display: inline; }
+
+.events .event.is-short {
+  display: flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1.1;
+}
+
+.events .event.is-short .ev-line { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- month cells */
+
+.events .mc {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: none; /* only the date number and chips are tappable */
+}
+
+.mc .mc-head {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  min-width: 0;
+  padding: 0 3%;
+}
+
+.mc .mc-date {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: var(--mc-date-box, 24px);
+  height: var(--mc-date-box, 24px);
+  padding: 0 0.3em;
+  border-radius: 999px;
+  color: var(--ink-1);
+  font-size: var(--mc-date-fs, 14px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* The date number is the finger's way into a day (SPEC §8: targets ≥ 44pt), but its circle is only
+   ~18px on an 11" iPad. An invisible extension widens the target, mostly over the free part of the
+   header strip; the cell's overflow:hidden keeps it inside the cell, and the chips (later in the DOM)
+   still win where they overlap it. Kept modest: a finger lasso/eraser cannot start on a tap target. */
+.mc .mc-date::before {
+  content: '';
+  position: absolute;
+  inset: -10px -20px -10px -12px;
+}
+
+.mc.is-red .mc-date { color: var(--red); }
+.mc.is-blue .mc-date { color: var(--blue); }
+.mc.is-today .mc-date {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mc .mc-date:active { background: rgba(31, 41, 55, 0.08); }
+.mc.is-today .mc-date:active { background: #1d4ed8; }
+.mc .mc-date:focus { outline: none; }
+.mc .mc-date:focus-visible { outline: 2px solid var(--accent); }
+
+.mc .mc-hol {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--red);
+  font-size: var(--mc-hol-fs, 10px);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mc .mc-chip,
+.mc .mc-more {
+  position: absolute;
+  right: 3%;
+  left: 3%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 0.35em;
+  border-radius: 4px;
+  font-size: var(--mc-chip-fs, 11px);
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.mc .mc-chip {
+  gap: 0.3em;
+  color: var(--ink-1);
+}
+
+.mc .mc-chip.is-allday {
+  background: var(--ev, #039be5);
+  color: var(--ev-fg, #fff);
+  font-weight: 600;
+}
+
+.mc .mc-chip.is-timed:active,
+.mc .mc-more:active { background: rgba(31, 41, 55, 0.06); }
+.mc .mc-chip.is-allday:active { filter: brightness(0.94); }
+.mc .mc-chip:focus,
+.mc .mc-more:focus { outline: none; }
+.mc .mc-chip:focus-visible,
+.mc .mc-more:focus-visible { outline: 2px solid var(--accent); }
+
+.mc .mc-dot {
+  flex: none;
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  background: var(--ev, #039be5);
+}
+
+.mc .mc-time {
+  flex: none;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.mc .mc-title {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.mc .mc-chip.is-timed .mc-title { font-weight: 500; }
+
+.mc .mc-more {
+  overflow: visible; /* lets the hit-area extension below reach out (the cell still clips it) */
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* '+n件' is a one-line strip (~13px): extend its finger target down into the free writing area (never
+   up: the chip above must keep its own taps). */
+.mc .mc-more::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 -14px;
+}
+
+/* Days of the neighbouring months: same layout, faded. */
+.mc.is-out .mc-date,
+.mc.is-out .mc-hol { opacity: 0.4; }
+.mc.is-out .mc-chip,
+.mc.is-out .mc-more { opacity: 0.55; }
+
+/* ---------------------------------------------------------------- sticky header (not inkable) */
+
+.sticky-header {
+  position: relative;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-1);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sticky-header .sh-inner { box-sizing: border-box; }
+
+.sticky-header button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.sticky-header button:focus { outline: none; }
+.sticky-header button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Week: [gutter] + 7 day headers, the same % geometry as the page columns. */
+.sh-days {
+  display: grid;
+  grid-template-columns: var(--sh-gutter, 4.5714%) repeat(7, minmax(0, 1fr));
+}
+
+.sh-day {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  overflow: hidden; /* narrow windows: never spill into the neighbouring day's column */
+  min-width: 0;
+  min-height: 48px;
+  padding: 4px 2px;
+  box-shadow: inset 1px 0 0 var(--line); /* lines up with the page's column line */
+}
+
+.sh-day.is-weekend { background: var(--weekend-tint); }
+.sh-day.is-today { background: var(--today-tint); }
+.sh-day--single.is-weekend { background: var(--weekend-tint-soft); }
+.sh-day--single.is-today { background: var(--today-tint-soft); }
+
+.sh-day .sh-dl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sh-day .sh-wd {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sh-day .sh-num {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 15px;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.sh-day.is-red .sh-wd,
+.sh-day.is-red .sh-num { color: var(--red); }
+.sh-day.is-blue .sh-wd,
+.sh-day.is-blue .sh-num { color: var(--blue); }
+
+.sh-day.is-today .sh-num {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sh-day.is-today .sh-wd {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sh-day:active .sh-num { background: rgba(31, 41, 55, 0.08); }
+.sh-day.is-today:active .sh-num { background: #1d4ed8; }
+
+.sh-day .sh-hol {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--red);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* All-day rows (week): chips span columns via CSS grid; rows are set by the JS. */
+.sh-allday {
+  --ad-row-h: 22px;
+  display: grid;
+  grid-template-columns: var(--sh-gutter, 4.5714%) repeat(7, minmax(0, 1fr));
+  row-gap: 2px;
+  padding: 3px 0 4px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.sh-allday-label {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  align-self: start;
+  overflow: hidden;
+  padding-right: 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: var(--ad-row-h);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ad-chip {
+  box-sizing: border-box;
+  overflow: hidden;
+  min-width: 0;
+  height: var(--ad-row-h);
+  margin: 0 3px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--ev, #039be5);
+  color: var(--ev-fg, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: var(--ad-row-h);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.ad-chip.cont-left {
+  margin-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.ad-chip.cont-right {
+  margin-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.ad-chip:active { filter: brightness(0.94); }
+.ad-chip:focus { outline: none; }
+.ad-chip:focus-visible { outline: 2px solid var(--accent); }
+
+.sticky-header .ad-more {
+  overflow: hidden;
+  height: var(--ad-row-h);
+  margin: 0 3px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sticky-header .ad-more:active { background: rgba(31, 41, 55, 0.06); }
+
+/* Day: [gutter] [date over the timeline column] [memo column]. */
+.sh-dayrow {
+  display: grid;
+  grid-template-columns: var(--sh-gutter, 7.2%) var(--sh-timeline, 58.8%) minmax(0, 1fr);
+}
+
+.sh-day.sh-day--single {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 12px;
+}
+
+.sh-day--single .sh-num {
+  min-width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  font-size: 21px;
+}
+
+.sh-day--single .sh-dtext {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.sh-day--single .sh-md {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.sh-day--single .sh-wd {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sh-day--single:not(.is-red):not(.is-blue):not(.is-today) .sh-wd { color: var(--ink-1); }
+
+.sh-day--single .sh-hol {
+  max-width: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(220, 38, 38, 0.08);
+  font-size: 12px;
+}
+
+.sh-memo-col { box-shadow: inset 1px 0 0 var(--line-strong); }
+
+.sh-allday.sh-allday--day {
+  grid-template-columns: var(--sh-gutter, 7.2%) var(--sh-timeline, 58.8%) minmax(0, 1fr);
+}
+
+.sh-allday--day .sh-allday-label { grid-row: 1; }
+
+.sh-allday-items {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 12px 0 4px;
+}
+
+.sh-allday-items .ad-chip { margin: 0; }
+.sh-allday-items .ad-chip.is-extra { display: none; }
+.sh-allday-items.is-expanded .ad-chip.is-extra { display: block; }
+.sh-allday-items .ad-more {
+  align-self: flex-start;
+  margin: 0;
+}
+
+/* Month: weekday labels over the 7 columns. */
+.sh-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.sh-wdcell {
+  padding: 6px 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+.sh-wdcell.is-red { color: var(--red); }
+.sh-wdcell.is-blue { color: var(--blue); }
+
+/* Split View / Slide Over (same breakpoint as the app header): week day columns are only ~45px wide,
+   so the weekday goes above a smaller date number instead of beside it. */
+@media (max-width: 500px) {
+  .sh-days .sh-day .sh-dl {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .sh-days .sh-day .sh-num {
+    min-width: 24px;
+    height: 24px;
+    padding: 0 3px;
+    border-radius: 12px;
+    font-size: 15px;
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "tegaki-calendar",
+  "name": "手書きカレンダー",
+  "short_name": "手書き暦",
+  "description": "Googleカレンダーの予定に、Apple Pencil で手書きできる手帳アプリ",
+  "lang": "ja",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fffdf8",
+  "theme_color": "#fffdf8",
+  "categories": ["productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
