@@ -5,6 +5,7 @@ iPad の Safari で動く、**Google カレンダーに Apple Pencil で手書�
 
 - 公開先（予定）: <https://syfan0-star.github.io/tegaki-calendar/>
 - Google とつなぐ設定: [docs/SETUP.md](docs/SETUP.md)
+- プライバシーポリシー: <https://syfan0-star.github.io/tegaki-calendar/privacy.html>
 
 ## できること
 

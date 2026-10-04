@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>プライバシーポリシー — 手書きカレンダー</title>
+  <link rel="icon" href="icons/favicon-32.png">
+  <style>
+    :root { --text: #1f2937; --muted: #6b7280; --accent: #2563eb; --paper: #fffdf8; --line: #e5e7eb; }
+    body {
+      margin: 0; background: var(--paper); color: var(--text);
+      font: 16px/1.8 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+    p, li { margin: 0 0 8px; }
+    .meta { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); }
+    code { font-size: 14px; background: #f3f4f6; padding: 1px 6px; border-radius: 4px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>プライバシーポリシー</h1>
+    <p class="meta">手書きカレンダー（Tegaki Calendar）／最終更新：2026年10月4日</p>
+
+    <p>手書きカレンダーは、iPad などのブラウザで動く個人用のカレンダーアプリです。
+      このページでは、アプリが扱うデータと、その保存場所・使い道を説明します。</p>
+
+    <h2>運営者のサーバーはありません</h2>
+    <p>このアプリは、GitHub Pages から配信される画面とプログラムだけでできています。
+      データを受け取る独自のサーバーはなく、あなたのデータが運営者や第三者に送られることはありません。
+      通信先は、あなたの端末と Google（ログイン・Google カレンダー・Google ドライブ）だけです。</p>
+
+    <h2>Google アカウントで許可していただく内容と使い道</h2>
+    <ul>
+      <li><strong>カレンダーの予定の表示と編集</strong>（<code>calendar.events</code>）：
+        予定をページに表示し、手書きから作った予定の登録・編集・削除に使います。</li>
+      <li><strong>カレンダーの一覧の表示</strong>（<code>calendar.calendarlist.readonly</code>）：
+        表示するカレンダーを選び、カレンダーの色を表示するために使います。</li>
+      <li><strong>Google ドライブのアプリ専用データ</strong>（<code>drive.appdata</code>）：
+        手書きを保存し、別の端末と同期するために使います。
+        保存先はドライブの「アプリ専用の非表示フォルダ」で、ドライブにある他のファイルを読むことはできません。</li>
+    </ul>
+    <p>Google から受け取ったデータは、上の機能のためだけに使います。広告、販売、分析、AI の学習には使いません。
+      このアプリによる Google API から受け取った情報の使用と他のアプリへの転送は、
+      <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API サービスのユーザーデータに関するポリシー</a>
+      （限定使用の要件を含む）に従います。</p>
+
+    <h2>端末に保存されるもの</h2>
+    <ul>
+      <li>手書きのデータ、表示中の予定の一時的な控え、設定（ブラウザ内のデータベースと localStorage）</li>
+      <li>Google へのログイン状態（約 1 時間で切れる「アクセストークン」）</li>
+    </ul>
+    <p>これらはあなたの端末の中だけにあり、ブラウザのサイトデータを消すと削除されます。</p>
+
+    <h2>許可の取り消しとデータの削除</h2>
+    <ul>
+      <li>アプリの設定画面の「ログアウト」で、端末からログイン状態を消し、Google への許可を取り消せます。</li>
+      <li><a href="https://myaccount.google.com/connections" rel="noopener">Google アカウントの「サードパーティ製のアプリとサービス」</a>
+        からも、いつでも許可を取り消せます。</li>
+      <li>ドライブに保存された手書きは、Google ドライブ → 設定 → アプリの管理 →「Tegaki Calendar」→ オプション →
+        「アプリの非表示データを削除」で削除できます。</li>
+      <li>アプリで登録した予定は通常の Google カレンダーの予定なので、Google カレンダーから削除できます。</li>
+    </ul>
+
+    <h2>お問い合わせ</h2>
+    <p>このアプリについてのお問い合わせは、
+      <a href="https://github.com/syfan0-star/tegaki-calendar/issues" rel="noopener">GitHub のリポジトリ</a> からお寄せください。</p>
+
+    <p class="meta"><a href="./">手書きカレンダーに戻る</a></p>
+  </main>
+</body>
+</html>
