@@ -581,9 +581,10 @@ test('week render: event boxes, sticky header, taps, idempotence', () => withDom
   const trip = chips.find((c) => c.textContent === '出張');
   assert.ok(trip.className.includes('cont-left')); // started 10/2, before this week
   assert.equal(trip.style.gridColumn, '2 / 4'); // 10/4..10/5
-  assert.ok(m.stickyEl.findAll('ad-more').length >= 1); // 4 all-day events on 10/6 > 3 rows
-  m.stickyEl.findAll('ad-more')[0].fire('click', {});
-  assert.equal(days[1].getDate(), 6);
+  // every all-day event is shown (4 on 10/6): no 「他n件」
+  assert.equal(m.stickyEl.findAll('ad-more').length, 0);
+  const allDayCount = events.filter((e) => e.allDay).length;
+  assert.equal(chips.length, allDayCount);
 
   // idempotent
   weekView.render({ ...params, events: events.slice(0, 10) });
@@ -735,8 +736,8 @@ test('week render: all-day rows arriving with the events do not move the page un
   assert.equal(pageTop(), top0);
 
   const many = [...allDay, ...Array.from({ length: 4 }, () => ev(at(2026, 10, 5), at(2026, 10, 6), { allDay: true }))];
-  weekView.render({ ...base, events: many }); // collapsed to 3 rows
-  assert.equal(rows(m.stickyEl), 3);
+  weekView.render({ ...base, events: many }); // every row is shown
+  assert.equal(rows(m.stickyEl), 6);
   assert.equal(pageTop(), top0);
 
   weekView.render({ ...base, events: [] }); // removed elsewhere (periodic refresh)

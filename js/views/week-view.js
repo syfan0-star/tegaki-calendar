@@ -119,7 +119,9 @@ function dayHeader(info, onDayTap) {
 
 function buildAllDay(ctx, days) {
   const items = safeCall(() => allDayRowsForRange(ctx.events, days), []);
-  const { visible, overflow, rows } = collapseAllDayRows(items, COLS);
+  // Every all-day event is shown (no 「他n件」): the user asked for all of them, as in the month view.
+  // A very tall stack scrolls inside the header instead (styles/views.css .sh-allday max-height).
+  const { visible, overflow, rows } = collapseAllDayRows(items, COLS, Infinity);
   if (rows === 0) return null;
 
   const wrap = htmlEl('div', 'sh-allday');

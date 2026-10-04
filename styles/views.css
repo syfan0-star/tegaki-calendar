@@ -519,7 +519,8 @@
   text-overflow: ellipsis;
 }
 
-/* All-day rows (week): chips span columns via CSS grid; rows are set by the JS. */
+/* All-day rows (week): chips span columns via CSS grid; rows are set by the JS. All rows are shown;
+   only an extreme stack (more than ~a third of the screen) scrolls inside the header. */
 .sh-allday {
   --ad-row-h: 22px;
   display: grid;
@@ -527,6 +528,12 @@
   row-gap: 2px;
   padding: 3px 0 4px;
   border-top: 1px solid var(--line-soft);
+}
+.sh-allday:not(.sh-allday--day) {
+  max-height: 34vh;
+  max-height: 34dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .sh-allday-label {
