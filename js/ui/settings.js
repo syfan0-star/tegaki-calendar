@@ -18,8 +18,6 @@ export const SETTINGS_TEXT = Object.freeze({
   account: 'Googleアカウント',
   calendars: '表示するカレンダー',
   defaultCalendar: '予定の登録先',
-  weekStart: '週の始まり',
-  weekStartNote: '切り替えると、週ページと月ページの手書きは別のページになります（元に戻すと表示されます）',
   input: '入力',
   allowFinger: '指・マウスでも書く',
   allowFingerHint: 'Apple Pencil がないときや、パソコンで試すときに使います。オンのときは、2本指でスクロールします',
@@ -196,26 +194,6 @@ export function openSettings(options = {}) {
         select);
     }
 
-    // ---- 「週の始まり」
-    const weekButtons = [];
-    const renderWeek = () => {
-      for (const b of weekButtons) {
-        const on = Number(b.dataset.value) === (draft.weekStart === 1 ? 1 : 0);
-        b.setAttribute('aria-pressed', on ? 'true' : 'false');
-        b.classList.toggle('is-active', on);
-      }
-    };
-    const weekSeg = h('div', { class: 'seg seg--wide', role: 'group', 'aria-label': SETTINGS_TEXT.weekStart },
-      [[0, '日曜'], [1, '月曜']].map(([value, label]) => {
-        const b = h('button', {
-          type: 'button', 'aria-pressed': 'false', dataset: { value },
-          onClick: () => { draft = { ...draft, weekStart: value }; renderWeek(); },
-        }, h('span', null, label));
-        weekButtons.push(b);
-        return b;
-      }));
-    renderWeek();
-    const weekSection = section(SETTINGS_TEXT.weekStart, weekSeg, h('p', { class: 'hint' }, SETTINGS_TEXT.weekStartNote));
 
     // ---- 「入力」 and the erase default
     const finger = switchControl(SETTINGS_TEXT.allowFinger, {
@@ -240,6 +218,6 @@ export function openSettings(options = {}) {
     modal.dialog.append(
       h('div', { class: 'dialog-header' }, h('h2', { class: 'dialog-title', id: titleId }, SETTINGS_TEXT.title), doneBtn),
       h('div', { class: 'dialog-body' },
-        accountSection, calendarSection, defaultSection, weekSection, inputSection, eraseSection, aboutSection));
+        accountSection, calendarSection, defaultSection, inputSection, eraseSection, aboutSection));
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "tegaki-calendar",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "iPad で Google カレンダーに Apple Pencil で手書きできる Web アプリ",
   "type": "module",

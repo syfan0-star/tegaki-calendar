@@ -168,7 +168,7 @@ function buildSticky(ctx, infos, days) {
  * See SPEC §4 F1 for the parameters.
  */
 export function render(params) {
-  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 0));
+  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 1));
   const days = weekDays(ctx);
   const infos = days.map((date) => ({
     date,
@@ -195,7 +195,7 @@ export function render(params) {
  * else 7:00. `range` (or `weekStart`) identifies the week; without them the week is assumed to start
  * on Sunday.
  */
-export function initialScrollMinutes({ date, now = new Date(), range = null, weekStart = 0 } = {}) {
+export function initialScrollMinutes({ date, now = new Date(), range = null, weekStart = 1 } = {}) {
   let days = Array.isArray(range?.days) && range.days.length ? range.days : null;
   if (!days) days = safeCall(() => rangeFor(VIEW, date instanceof Date ? date : now, weekStart).days, []);
   return initialScrollFor(days.some((d) => isSameDay(d, now)), now);

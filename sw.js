@@ -13,7 +13,7 @@
 //   「新しいバージョンがあります」 toast); activate claims clients and deletes old caches. An incomplete
 //   precache fails the install, so the old worker and its complete cache stay until a later retry.
 
-const VERSION = '1.0.3'; // keep in sync with APP_VERSION in js/config.js
+const VERSION = '1.0.4'; // keep in sync with APP_VERSION in js/config.js
 const CACHE_PREFIX = 'tegaki-v';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
@@ -53,6 +53,7 @@ const APP_FILES = [
   'js/ink/geometry.js',
   'js/ink/render.js',
   'js/ink/surface.js',
+  'js/ink/legacy-week-start.js',
   'js/ui/dom.js',
   'js/ui/header.js',
   'js/ui/toolbar.js',

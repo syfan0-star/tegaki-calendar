@@ -37,7 +37,8 @@ import { createDriveApi } from './google/drive.js';
 import { createGoogleCalendarSource, createDemoCalendarSource, newEventId } from './data/calendar-source.js';
 import { createInkStore } from './data/ink-store.js';
 import { openKV } from './util/idb.js';
-import { emptyPage, mergePages, sameContent } from './ink/model.js';
+import { addStrokes, emptyPage, mergePages, sameContent } from './ink/model.js';
+import { legacySourcesFor, legacyStrokesFor } from './ink/legacy-week-start.js';
 import { PEN_SIZES, HIGHLIGHTER_SIZE } from './ink/render.js';
 import { InkSurface } from './ink/surface.js';
 import {
@@ -93,7 +94,7 @@ const ACCOUNT_MISMATCH_MESSAGE = '前回とは別のGoogleアカウントでロ�
   + 'Googleドライブへの同期を止めました（前のアカウントでログインし直すと同期します）';
 const TOOL_KEYS = { p: 'pen', h: 'highlighter', e: 'eraser', l: 'lasso', v: 'event' };
 const VIEW_KEYS = { d: 'day', w: 'week', m: 'month' };
-const SETTINGS_DIALOG_KEYS = ['weekStart', 'allowFinger', 'eraseInkAfterConvert', 'hiddenCalendarIds', 'defaultCalendarId'];
+const SETTINGS_DIALOG_KEYS = ['allowFinger', 'eraseInkAfterConvert', 'hiddenCalendarIds', 'defaultCalendarId'];
 const WRITER_LOCK = 'tegaki-writer';           // Web Lock: the newest tab (window) of the app is the live one
 const STORAGE_DEGRADED_MESSAGE = 'この端末に手書きを保存できない状態になりました。再読み込みしてください（Googleに同期済みの手書きは消えません）';
 const SIGN_OUT_CONFIRM = 'ログアウトすると、ほかの端末（iPad・パソコンなど）でも、もう一度Googleへのログインが必要になります。ログアウトしますか？';
@@ -1437,7 +1438,50 @@ async function loadPageInk(p) {
     saveInk(p.pageId, merged);
   }
   updateToolbar();
-  refreshPageInk(p);
+  refreshPageInk(p).finally(() => carryLegacyInk(p));
+}
+
+/**
+ * Handwriting from before 1.0.4 on Sunday-start week / month pages (see ink/legacy-week-start.js) is
+ * copied onto this Monday-start page, on the same dates. Marked done per page once the old pages were
+ * read both locally and from Drive (お試しモード: locally), so later visits cost nothing.
+ */
+async function carryLegacyInk(p) {
+  const sources = legacySourcesFor(p.pageId);
+  if (!sources.length || !S.inkStore || !S.kv) return;
+  const doneKey = `legacyWeekStart:${p.pageId}`;
+  try {
+    if (await S.kv.get(doneKey)) return;
+    const docs = new Map();
+    let refreshFailed = false;
+    for (const id of sources) {
+      try {
+        await S.inkStore.refresh(id); // merges the Drive copies of the old page into the local one
+      } catch (err) {
+        refreshFailed = true;
+        warn('legacy ink refresh failed', describe(err));
+      }
+      docs.set(id, await S.inkStore.load(id));
+    }
+    // refresh() also reports failures through the status; anything but 'synced' means "try again later".
+    const remoteRead = S.mode === 'demo' || (!refreshFailed && S.inkStore.getStatus() === 'synced');
+    if (S.page !== p || !p.loaded || !S.surface) return; // navigated away: the next visit copies them
+    const strokes = legacyStrokesFor(p.pageId, docs);
+    if (strokes.length) {
+      const current = S.surface.getDoc();
+      if (!current || current.pageId !== p.pageId) return;
+      const merged = addStrokes(current, strokes); // copies already there (or erased) are skipped
+      if (!sameContent(current, merged)) {
+        S.surface.setDoc(merged, { resetHistory: false });
+        updateToolbar();
+        // Persist before marking the page done: on an empty page the copies exist nowhere else yet.
+        await S.inkStore.save(p.pageId, merged);
+      }
+    }
+    if (remoteRead) await S.kv.set(doneKey, true);
+  } catch (err) {
+    warn('legacy ink copy failed', describe(err));
+  }
 }
 
 /** Pulls remote ink for a page (merge happens in applyRemoteInk via onRemoteUpdate / the return value). */

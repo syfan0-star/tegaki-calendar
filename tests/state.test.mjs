@@ -75,7 +75,7 @@ function quietWarn(fn) {
 test('defaultSettings matches SPEC §2 and fills date with today', () => {
   const s = defaultSettings({ now: NOW });
   assert.deepEqual({ ...s, hiddenCalendarIds: [...s.hiddenCalendarIds] }, {
-    weekStart: 0, allowFinger: false, eraseInkAfterConvert: true, hiddenCalendarIds: [],
+    weekStart: 1, allowFinger: false, eraseInkAfterConvert: true, hiddenCalendarIds: [],
     defaultCalendarId: null, demo: false, tool: 'pen', penColor: '#1f2937', penSize: 'medium',
     hlColor: '#fde047', view: 'week', date: '2026-10-04',
   });
@@ -118,10 +118,12 @@ test('sanitizeSettings drops unknown keys and replaces invalid values with the f
   assert.equal(s.polluted, undefined);
 });
 
-test('sanitizeSettings: weekStart only 0 or 1 (numbers), all tools and sizes accepted', () => {
-  for (const bad of ['1', 2, -1, 0.5, null, true]) {
-    assert.equal(sanitizeSettings({ weekStart: bad }).weekStart, 0, String(bad));
+test('sanitizeSettings: weekStart is fixed to Monday (1), all tools and sizes accepted', () => {
+  // Saved Sunday starts (0) from older versions and any garbage are upgraded to Monday.
+  for (const v of [0, 1, '1', 2, -1, 0.5, null, true, undefined]) {
+    assert.equal(sanitizeSettings({ weekStart: v }).weekStart, 1, String(v));
   }
+  assert.equal(sanitizeSettings({}).weekStart, 1);
   for (const tool of ['pen', 'highlighter', 'eraser', 'lasso', 'event']) {
     assert.equal(sanitizeSettings({ tool }).tool, tool);
   }
@@ -251,9 +253,9 @@ test('createSettingsStore validates updates, keeps current values for invalid on
   assert.equal(store.get().tool, 'highlighter');
   assert.equal(JSON.parse(storage.map.get(SETTINGS_KEY)).penColor, '#dc2626');
 
-  store.set({ tool: 'bogus', weekStart: 7 }); // invalid → keep current values, nothing changes
+  store.set({ tool: 'bogus', weekStart: 0 }); // invalid tool → kept; weekStart stays Monday
   assert.equal(store.get().tool, 'highlighter');
-  assert.equal(store.get().weekStart, 0);
+  assert.equal(store.get().weekStart, 1);
 
   assert.equal(storage.map.has(ROUTE_AT_KEY), false);
   t = NOW + 1000;

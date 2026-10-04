@@ -364,6 +364,47 @@
 .mc.is-out .mc-chip,
 .mc.is-out .mc-more { opacity: 0.55; }
 
+/* '+n件' next to the date number when the all-day lanes fill the whole cell. */
+.mc .mc-head .mc-more.is-badge {
+  position: relative;
+  right: auto;
+  left: auto;
+  flex: none;
+  margin-left: auto;
+  padding: 0 0.3em;
+}
+.mc .mc-head .mc-more.is-badge::before { inset: -6px; }
+
+/* All-day events: bars spanning their days within a week row (siblings of the cells, above them). */
+.events .mc-bar {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 0.4em;
+  border-radius: 4px;
+  background: var(--ev, #039be5);
+  color: var(--ev-fg, #fff);
+  font-size: calc(var(--mc-chip-fs, 11px) * var(--mc-bar-k, 1));
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.events .mc-bar.cont-left { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.events .mc-bar.cont-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.events .mc-bar.is-out { opacity: 0.55; }
+.events .mc-bar:active { filter: brightness(0.94); }
+.events .mc-bar:focus { outline: none; }
+.events .mc-bar:focus-visible { outline: 2px solid var(--accent); }
+.events .mc-bar .mc-bar-title {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
 /* ---------------------------------------------------------------- sticky header (not inkable) */
 
 .sticky-header {

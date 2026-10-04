@@ -101,7 +101,7 @@ export function authChipInfo(authInput) {
  * month → '2026年10月'.
  * @returns {{ title: string, holiday: string }}
  */
-export function headerTitle({ view, date, range, weekStart = 0 } = {}) {
+export function headerTitle({ view, date, range, weekStart = 1 } = {}) {
   const d = isValidDate(date) ? date : null;
   if (view === 'month') {
     const m = isValidDate(range?.monthStart) ? range.monthStart : d;
@@ -182,7 +182,7 @@ export function createHeader(el, handlers = {}) {
   if (!el) throw new TypeError('createHeader: el is required');
   const hd = handlers || {};
   let state = {
-    view: 'week', date: null, range: null, weekStart: 0, title: null,
+    view: 'week', date: null, range: null, weekStart: 1, title: null,
     sync: null, auth: normalizeAuthState(null), canAddEvent: true,
   };
 

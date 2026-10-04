@@ -419,12 +419,15 @@ test('initialScrollMinutes: now-60 when today is shown, else 7:00', () => {
   assert.equal(dayView.initialScrollMinutes({ date: at(2026, 10, 5), now }), 420);
 
   // week: any day of the week containing today counts (Sun-start week 10/4..10/10)
-  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 9), now }), 800);
-  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 11), now }), 420);
+  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 9), now, weekStart: 0 }), 800);
+  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 11), now, weekStart: 0 }), 420);
+  // default Monday start: 10/4 (Sun) belongs to 9/28..10/4, so 10/9 is another week
+  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 1), now }), 800);
+  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 9), now }), 420);
   const monWeek = rangeFor('week', at(2026, 10, 3), 1); // 9/28..10/4
   assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 3), now, range: monWeek }), 800);
   assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 3), now, weekStart: 1 }), 800);
-  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 3), now }), 420); // Sun-start: 9/27..10/3
+  assert.equal(weekView.initialScrollMinutes({ date: at(2026, 10, 3), now, weekStart: 0 }), 420); // Sun-start: 9/27..10/3
 
   assert.equal(monthView.initialScrollMinutes({ date: at(2026, 10, 4), now }), 0);
 });
@@ -894,10 +897,13 @@ test('month render: 42 cells, chips fit the top of the cell, +n件, taps', () =>
   more.fire('click', {});
   assert.equal(days.at(-1).getDate(), 15);
 
-  const allDayChip = cells[idx(at(2026, 10, 20))].findAll('mc-chip')[0];
-  assert.ok(allDayChip.className.includes('is-allday'));
-  assert.equal(allDayChip.style.getPropertyValue('--ev'), '#fbd75b');
-  allDayChip.fire('click', { pointerType: 'mouse' });
+  // all-day events are bars over the cells (not chips inside them)
+  assert.equal(cells[idx(at(2026, 10, 20))].findAll('mc-chip').filter((c) => c.className.includes('is-allday')).length, 0);
+  const bars = m.eventsEl.findAll('mc-bar');
+  assert.equal(bars.length, 1);
+  assert.ok(bars[0].textContent.includes('記念日'));
+  assert.equal(bars[0].style.getPropertyValue('--ev'), '#fbd75b');
+  bars[0].fire('click', { pointerType: 'mouse' });
   assert.equal(tapped.at(-1).title, '記念日');
 
   // overnight event: start time on day 1, '〜1:00' on day 2
@@ -925,3 +931,62 @@ test('month render: 42 cells, chips fit the top of the cell, +n件, taps', () =>
   assert.equal(monLabels[0].textContent, '月');
   assert.ok(monLabels[6].className.includes('is-red'));
 }));
+
+test('month: every all-day event is shown as a bar — many lanes get thinner, multi-day bars span and continue', () => withDom((doc) => {
+  const spec = PAGE_SPECS.month;
+  const m = mountPage(doc, 'month', spec, 820, 900);
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1); // Monday start: 9/28 .. 11/8
+  const now = at(2026, 10, 4, 10);
+  const many = Array.from({ length: 9 }, (_, i) => ev(at(2026, 10, 14), at(2026, 10, 15), { allDay: true, title: `タスク${i + 1}` }));
+  const trip = ev(at(2026, 10, 9), at(2026, 10, 14), { allDay: true, title: '旅行' }); // Fri 10/9 .. Tue 10/13
+  const timed = ev(at(2026, 10, 14, 9), at(2026, 10, 14, 10), { title: '会議' });
+  const tapped = [];
+  monthView.render({
+    ...m, date, range, events: [...many, trip, timed], settings: { weekStart: 1 }, now,
+    onEventTap: (e) => tapped.push(e), onDayTap: () => {},
+  });
+  const bars = m.eventsEl.findAll('mc-bar');
+  const titles = bars.map((b) => b.textContent);
+  for (let i = 1; i <= 9; i++) assert.ok(titles.includes(`タスク${i}`), `タスク${i} shown`);
+  // the trip crosses the week boundary (Sun 10/11 → Mon 10/12): two bars, continuing
+  const tripBars = bars.filter((b) => b.textContent === '旅行');
+  assert.equal(tripBars.length, 2);
+  assert.ok(tripBars[0].className.includes('cont-right'));
+  assert.ok(tripBars[1].className.includes('cont-left'));
+  // all 9 + the trip's 10/13 lane fit inside the row: thinner lanes, smaller text
+  const metrics = monthCellMetrics(m.layout.scale);
+  const lm = monthView.allDayLaneMetrics(10, metrics);
+  assert.ok(lm.fontScale < 1);
+  assert.ok(metrics.headerLu + 10 * lm.step - metrics.gapLu <= 175 - 2 + 1e-6);
+  const rowTop = 2 * 175; // 10/14 is in the third row
+  for (const b of bars.filter((x) => x.textContent.startsWith('タスク'))) {
+    const top = parseFloat(b.style.top) / 100 * 1050;
+    const bottom = top + parseFloat(b.style.height) / 100 * 1050;
+    assert.ok(top >= rowTop && bottom <= rowTop + 175 + 1e-6, 'bar stays inside its row');
+  }
+  // the timed event of that day cannot fit any more: '+1件' next to the date number
+  const idx = range.days.findIndex((x) => x.getTime() === at(2026, 10, 14).getTime());
+  const cell = m.eventsEl.findAll('mc')[idx];
+  const badge = cell.findAll('mc-more')[0];
+  assert.equal(badge.textContent, '+1件');
+  assert.ok(badge.className.includes('is-badge'));
+  bars[0].fire('click', { pointerType: 'mouse' });
+  assert.equal(tapped.length, 1);
+}));
+
+test('month layout helpers: lanes keep their size when they fit; timed chips use the space below', () => {
+  const metrics = monthCellMetrics(0.6);
+  const one = monthView.allDayLaneMetrics(1, metrics);
+  assert.equal(one.laneLu, metrics.chipLu);
+  assert.equal(one.fontScale, 1);
+  const none = monthView.timedChipLayout(0, 0, one.step, metrics);
+  assert.equal(none.shown, 0);
+  const free = monthView.timedChipLayout(2, 0, one.step, metrics);
+  assert.deepEqual([free.shown, free.more], [2, 0]);
+  assert.equal(free.top, metrics.headerLu);
+  const below = monthView.timedChipLayout(2, 2, one.step, metrics);
+  assert.equal(below.top, metrics.headerLu + 2 * one.step);
+  const full = monthView.timedChipLayout(3, 20, one.step, metrics);
+  assert.deepEqual([full.shown, full.more, full.slots], [0, 3, 0]);
+});

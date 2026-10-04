@@ -3,7 +3,7 @@
 // GOOGLE_CLIENT_ID is the Web client of the Google Cloud project 'tegaki-calendar' (docs/SETUP.md).
 // A client ID is public by design (it is sent in every sign-in URL); the client secret is never used.
 
-export const APP_VERSION = '1.0.3';
+export const APP_VERSION = '1.0.4';
 
 /** OAuth 2.0 Web client ID ('xxxx.apps.googleusercontent.com'); '' → Google features disabled. */
 export const GOOGLE_CLIENT_ID = '114879404947-dsm25vst22i9gvj1kkg418nb4n74miiv.apps.googleusercontent.com';

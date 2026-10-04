@@ -32,7 +32,7 @@ const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Defaults (SPEC §2). `date` is filled with today's date by defaultSettings(). */
 export const DEFAULT_SETTINGS = Object.freeze({
-  weekStart: 0,
+  weekStart: 1, // fixed: weeks and month grids always start on Monday (the user asked for it)
   allowFinger: false,
   eraseInkAfterConvert: true,
   hiddenCalendarIds: Object.freeze([]),
@@ -91,7 +91,7 @@ function cleanIdList(v) {
  * Strings that only differ in case are normalized (colors lowercase).
  */
 const VALIDATORS = {
-  weekStart: (v) => (v === 0 || v === 1 ? v : undefined),
+  weekStart: () => 1, // fixed to Monday; older saved values (0 = Sunday) are upgraded
   allowFinger: (v) => (typeof v === 'boolean' ? v : undefined),
   eraseInkAfterConvert: (v) => (typeof v === 'boolean' ? v : undefined),
   hiddenCalendarIds: (v) => cleanIdList(v) ?? undefined,

@@ -1,9 +1,11 @@
-// Month page (module F1): a 7×6 grid of day cells. Each cell shows its date number, holiday name and
-// as many one-line event chips as fit in its top ~60%; the lower part stays free for handwriting.
-// The sticky header shows the weekday labels aligned with the columns.
+// Month page (module F1): a 7×6 grid of day cells. Each cell shows its date number and holiday name.
+// All-day events are bars spanning their days in each week row (like Google Calendar) and are ALWAYS
+// all shown: when a row has many, its lanes get thinner instead of hiding any. Timed events follow as
+// one-line chips, as many as fit in the top ~60% of the cell (the rest: '+n件'), so the lower part
+// stays free for handwriting. The sticky header shows the weekday labels aligned with the columns.
 
 import { PAGE_SPECS, monthCellRect, rangeFor } from './page-geometry.js';
-import { eventsOnDay } from './event-layout.js';
+import { allDayRowsForRange, eventsOnDay } from './event-layout.js';
 import { WEEKDAYS_JA, addDays, formatDateJa, formatTimeJa, isValidDate, startOfMonth } from '../util/date.js';
 import { getHolidayName } from '../util/holidays-jp.js';
 import {
@@ -90,12 +92,49 @@ function eventChip(ev, day, onEventTap) {
   return chip;
 }
 
-function buildCell(ctx, c, m) {
+/** Inset of an all-day bar from the cell edges (lu). */
+const BAR_INSET = 4;
+/** Free space kept under the last all-day lane (lu). */
+const BAR_BOTTOM_PAD = 2;
+
+/**
+ * Lane metrics of one week row. Every lane must fit between the date header and the cell bottom:
+ * with too many lanes they get thinner (and their text smaller) — all-day events are never hidden.
+ * @returns {{ laneLu: number, step: number, fontScale: number }}
+ */
+export function allDayLaneMetrics(laneCount, m, cellH = CELL_H) {
+  const gap = m.gapLu;
+  const avail = cellH - m.headerLu - BAR_BOTTOM_PAD;
+  let lane = m.chipLu;
+  if (laneCount > 0 && laneCount * (lane + gap) - gap > avail) {
+    lane = Math.max(1, (avail + gap) / laneCount - gap);
+  }
+  return { laneLu: lane, step: lane + gap, fontScale: Math.min(1, lane / m.chipLu) };
+}
+
+/**
+ * Timed chips of a cell below its all-day lanes: they use the space down to the ~60% line (or one
+ * chip below the lanes when the lanes reach further), never past the cell bottom.
+ * @returns {{ top: number, shown: number, more: number, slots: number }}
+ */
+export function timedChipLayout(count, lanesUsed, laneStep, m, cellH = CELL_H) {
+  const top = m.headerLu + lanesUsed * laneStep;
+  const step = m.chipLu + m.gapLu;
+  const bottom = Math.min(cellH - 1, Math.max(m.listBottomLu, top + step));
+  const slots = Math.max(0, Math.floor((bottom - top + m.gapLu) / step + 1e-9));
+  if (count <= 0) return { top, shown: 0, more: 0, slots };
+  if (slots === 0) return { top, shown: 0, more: count, slots };
+  const { shown, more } = fitChips(count, bottom - top, m.chipLu, m.gapLu);
+  return { top, shown, more, slots };
+}
+
+function buildCell(ctx, c, m, lanesUsed, laneStep) {
   const r = cellRect(c.row, c.col);
   const cell = htmlEl('div', ['mc', ...dayClassList(c.flags), c.inMonth ? '' : 'is-out'].filter(Boolean).join(' '));
   cell.style.cssText = `left:${pct(r.x, SPEC.W)}%;top:${pct(r.y, SPEC.H)}%;width:${pct(r.w, SPEC.W)}%;height:${pct(r.h, SPEC.H)}%;`;
 
   const list = safeCall(() => eventsOnDay(ctx.events, c.date), []);
+  const timed = list.filter((ev) => !ev.allDay);
 
   const head = htmlEl('div', 'mc-head');
   head.style.height = `${pct(m.headerLu, CELL_H)}%`;
@@ -108,27 +147,71 @@ function buildCell(ctx, c, m) {
   if (c.flags.holiday) head.append(htmlEl('span', 'mc-hol', c.flags.holiday));
   cell.append(head);
 
-  const { shown, more } = fitChips(list.length, m.listBottomLu - m.headerLu, m.chipLu, m.gapLu);
+  const lay = timedChipLayout(timed.length, lanesUsed, laneStep, m);
   const step = m.chipLu + m.gapLu;
   const place = (el, i) => {
-    el.style.top = `${pct(m.headerLu + i * step, CELL_H)}%`;
+    el.style.top = `${pct(lay.top + i * step, CELL_H)}%`;
     el.style.height = `${pct(m.chipLu, CELL_H)}%`;
   };
-  for (let i = 0; i < shown; i++) {
-    const ev = list[i];
+  for (let i = 0; i < lay.shown; i++) {
+    const ev = timed[i];
     const chip = eventChip(ev, c.date, ctx.onEventTap);
     chip.style.cssText = eventColorVars(ev, 1);
     place(chip, i);
     cell.append(chip);
   }
-  if (more > 0) {
-    const moreEl = htmlEl('div', 'mc-more', `+${more}件`);
-    moreEl.setAttribute('aria-label', `${formatDateJa(c.date)} の予定 他${more}件（日表示へ）`);
-    place(moreEl, shown);
+  if (lay.more > 0) {
+    const moreEl = htmlEl('div', 'mc-more', `+${lay.more}件`);
+    moreEl.setAttribute('aria-label', `${formatDateJa(c.date)} の予定 他${lay.more}件（日表示へ）`);
     onActivate(moreEl, () => ctx.onDayTap(c.date), { ignorePen: true });
-    cell.append(moreEl);
+    if (lay.slots > 0) {
+      place(moreEl, lay.shown);
+      cell.append(moreEl);
+    } else {
+      // The all-day lanes fill the cell: the count goes next to the date number.
+      moreEl.classList.add('is-badge');
+      head.append(moreEl);
+    }
   }
   return cell;
+}
+
+/** One all-day bar of a week row (spanning startCol..endCol of that row). */
+function allDayBar(ctx, it, rowIndex, rowCells, m, lm) {
+  const ev = it.event;
+  const first = rowCells[it.startCol];
+  const last = rowCells[it.endCol];
+  const cls = ['mc-bar'];
+  if (ev.start.getTime() < first.date.getTime()) cls.push('cont-left');
+  if (ev.end.getTime() > addDays(last.date, 1).getTime()) cls.push('cont-right');
+  if (rowCells.slice(it.startCol, it.endCol + 1).every((c) => !c.inMonth)) cls.push('is-out');
+  const bar = htmlEl('div', cls.join(' '));
+  bar.dataset.eventId = String(ev.id ?? '');
+  bar.dataset.calendarId = String(ev.calendarId ?? '');
+  bar.setAttribute('aria-label', eventAriaLabel(ev));
+  bar.append(htmlEl('span', 'mc-bar-title', eventTitle(ev)));
+  const x = it.startCol * CELL_W + BAR_INSET;
+  const w = (it.endCol - it.startCol + 1) * CELL_W - 2 * BAR_INSET;
+  const y = rowIndex * CELL_H + m.headerLu + it.row * lm.step;
+  bar.style.cssText = `left:${pct(x, SPEC.W)}%;top:${pct(y, SPEC.H)}%;width:${pct(w, SPEC.W)}%;`
+    + `height:${pct(lm.laneLu, SPEC.H)}%;${eventColorVars(ev, 1)}`
+    + (lm.fontScale < 1 ? `--mc-bar-k:${Math.round(lm.fontScale * 1000) / 1000};` : '');
+  onActivate(bar, () => ctx.onEventTap(ev), { ignorePen: true });
+  return bar;
+}
+
+/** All-day bars of one week row + how many lanes each of its 7 days uses. */
+function buildRow(ctx, rowIndex, rowCells, m) {
+  const items = safeCall(() => allDayRowsForRange(ctx.events, rowCells.map((c) => c.date)), []);
+  const laneCount = items.reduce((mx, it) => Math.max(mx, it.row + 1), 0);
+  const lm = allDayLaneMetrics(laneCount, m);
+  const lanesUsed = new Array(COLS).fill(0);
+  const bars = [];
+  for (const it of items) {
+    for (let col = it.startCol; col <= it.endCol; col++) lanesUsed[col] = Math.max(lanesUsed[col], it.row + 1);
+    bars.push(allDayBar(ctx, it, rowIndex, rowCells, m, lm));
+  }
+  return { bars, lanesUsed, laneStep: lm.step };
 }
 
 function buildCells(ctx, cells) {
@@ -139,7 +222,14 @@ function buildCells(ctx, cells) {
   st.setProperty('--mc-chip-fs', `${m.chipPx}px`);
   st.setProperty('--mc-hol-fs', `${m.holidayPx}px`);
   const frag = document.createDocumentFragment();
-  for (const c of cells) frag.append(buildCell(ctx, c, m));
+  const bars = [];
+  for (let row = 0; row < ROWS; row++) {
+    const rowCells = cells.slice(row * COLS, row * COLS + COLS);
+    const r = buildRow(ctx, row, rowCells, m);
+    for (const c of rowCells) frag.append(buildCell(ctx, c, m, r.lanesUsed[c.col], r.laneStep));
+    bars.push(...r.bars);
+  }
+  for (const bar of bars) frag.append(bar); // above the cells
   ctx.eventsEl.replaceChildren(frag);
 }
 
@@ -161,7 +251,7 @@ function buildSticky(ctx, cells) {
  * See SPEC §4 F1 for the parameters.
  */
 export function render(params) {
-  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 0));
+  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 1));
   const cells = cellInfos(ctx);
   buildGrid(ctx, cells);
   buildCells(ctx, cells);

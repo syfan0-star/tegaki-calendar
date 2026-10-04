@@ -268,7 +268,8 @@ test('headerTitle per view (holiday name on day pages)', () => {
   assert.equal(headerTitle({ view: 'week', date: d(2026, 10, 4), range: { start: d(2026, 10, 4), end: d(2026, 10, 11) } }).title,
     '2026年10月4日〜10月10日');
   assert.equal(headerTitle({ view: 'week', date: d(2026, 10, 4), weekStart: 1 }).title, '2026年9月28日〜10月4日');
-  assert.equal(headerTitle({ view: 'week', date: d(2026, 12, 31) }).title, '2026年12月27日〜2027年1月2日');
+  assert.equal(headerTitle({ view: 'week', date: d(2026, 12, 31) }).title, '2026年12月28日〜2027年1月3日'); // default: Monday start
+  assert.equal(headerTitle({ view: 'week', date: d(2026, 12, 31), weekStart: 0 }).title, '2026年12月27日〜2027年1月2日');
   assert.equal(headerTitle({ view: 'month', date: d(2026, 10, 4) }).title, '2026年10月');
   assert.equal(headerTitle({ view: 'month', date: d(2026, 9, 28), range: { monthStart: d(2026, 10, 1) } }).title, '2026年10月');
   assert.equal(headerTitle({ view: 'day', date: 'nope' }).title, '');
@@ -909,7 +910,7 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   const p = openSettings({ settings, calendars: CALS, auth: { signedIn: true, email: 'me@example.com', configured: true, demo: false }, version: '1.0.0' });
   const dialog = byClass(doc.body, 'dialog')[0];
   const text = dialog.textContent;
-  for (const s of ['Googleアカウント', '表示するカレンダー', '予定の登録先', '週の始まり', '切り替えると、週ページと月ページの手書きは別のページになります（元に戻すと表示されます）',
+  for (const s of ['Googleアカウント', '表示するカレンダー', '予定の登録先',
     '入力', '指・マウスでも書く', '予定にした手書きを消す（初期値）', 'データについて', 'アプリ専用の非表示フォルダ', 'バージョン 1.0.0', 'me@example.com']) {
     assert.ok(text.includes(s), s);
   }
@@ -921,7 +922,8 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   checks[1].dispatchEvent(new FakeEvent('change'));
   checks[2].checked = false;
   checks[2].dispatchEvent(new FakeEvent('change'));
-  byText(dialog, 'button', '月曜').click();
+  // The week always starts on Monday: there is no 週の始まり choice any more.
+  assert.ok(!text.includes('週の始まり'));
   const switches = all(dialog, (c) => c.getAttribute('role') === 'switch');
   switches[0].checked = true;
   switches[0].dispatchEvent(new FakeEvent('change'));
@@ -933,7 +935,7 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   const r = await p;
   assert.equal(r.action, undefined);
   assert.deepEqual(r.settings.hiddenCalendarIds, ['shared']);
-  assert.equal(r.settings.weekStart, 1);
+  assert.equal(r.settings.weekStart, 0, 'untouched (the store forces Monday)');
   assert.equal(r.settings.allowFinger, true);
   assert.equal(r.settings.eraseInkAfterConvert, false);
   assert.equal(r.settings.defaultCalendarId, 'work');

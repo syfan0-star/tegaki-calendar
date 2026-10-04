@@ -176,7 +176,7 @@ function buildSticky(ctx, info) {
  * See SPEC §4 F1 for the parameters.
  */
 export function render(params) {
-  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 0));
+  const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 1));
   const day = ctx.days[0];
   const info = { date: day, flags: dayFlags(day, safeCall(() => getHolidayName(day), null), ctx.now) };
   // The page stays put on screen even when the all-day list (sticky header height) changes.
