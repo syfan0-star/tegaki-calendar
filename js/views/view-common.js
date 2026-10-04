@@ -1,4 +1,4 @@
-// Shared building blocks for the day / week / month pages (module F1).
+// Shared building blocks for the day / week / month / year pages (module F1).
 //
 // Every page lives in a fixed logical coordinate system (W×H "lu", see page-geometry.js):
 //   - grid lines are drawn in ONE <svg class="grid" viewBox="0 0 W H" preserveAspectRatio="none">.
@@ -36,7 +36,18 @@ export const TYPE = Object.freeze({
   monthDate: Object.freeze({ lu: 17, minPx: 12 }),
   monthChip: Object.freeze({ lu: 12.5, minPx: 10 }),
   monthHoliday: Object.freeze({ lu: 11, minPx: 9 }),
+  // Year page: 112×60 lu cells, ~66×35 px in portrait — everything is small but stays readable.
+  yearDayNum: Object.freeze({ lu: 22, minPx: 11 }),
+  yearWeekday: Object.freeze({ lu: 15, minPx: 9 }),
+  yearChip: Object.freeze({ lu: 13, minPx: 8 }),
+  yearHoliday: Object.freeze({ lu: 11, minPx: 7.5 }),
 });
+
+/**
+ * Fit 'grid' (month): how much of the memo area below the grid peeks into the viewport (CSS px), so the
+ * user sees there is more paper to scroll to.
+ */
+export const MEMO_PEEK_PX = 28;
 
 /** Event box line height (must match .event { line-height } in views.css). */
 export const EVENT_LINE_HEIGHT = 1.25;
@@ -102,6 +113,10 @@ export function gutterLabelLu(type, scale, gutter) {
  * Page scale for a viewport (SPEC F1 applyPageScale):
  *   fit 'width'   → scale = clientWidth / W (the viewport scrolls vertically)
  *   fit 'contain' → scale = min(clientWidth / W, clientHeight / H), centered horizontally.
+ *   fit 'grid'    → scale = min(clientWidth / W, (clientHeight − MEMO_PEEK_PX) / gridH), centered
+ *                   horizontally like 'contain'; the page (W×H) is taller than the viewport, which scrolls
+ *                   vertically: the whole grid (y < gridH) fits the screen and the top MEMO_PEEK_PX of the
+ *                   area below it peeks in.
  * A zero dimension (element not laid out yet) is ignored; with no usable size at all the
  * fallbackWidth (e.g. window.innerWidth) is used, else scale 1.
  * @returns {{ scale: number, cssW: number, cssH: number, offsetX: number }}
@@ -111,13 +126,17 @@ export function computePageScale({ clientWidth, clientHeight, spec, fallbackWidt
   const H = positiveOr(spec?.H, 1000);
   const cw = positiveOr(clientWidth, 0);
   const ch = positiveOr(clientHeight, 0);
-  const contain = spec?.fit === 'contain';
+  const fit = spec?.fit;
+  const centered = fit === 'contain' || fit === 'grid';
 
   let scale = 0;
-  if (contain) {
+  if (centered) {
+    // The height that must fit the viewport, and how much of the viewport it may use.
+    const fitH = fit === 'grid' ? positiveOr(spec?.gridH, H) : H;
+    const usableH = fit === 'grid' ? ch - MEMO_PEEK_PX : ch;
     const candidates = [];
     if (cw > 0) candidates.push(cw / W);
-    if (ch > 0) candidates.push(ch / H);
+    if (ch > 0 && usableH > 0) candidates.push(usableH / fitH);
     if (candidates.length) scale = Math.min(...candidates);
   } else if (cw > 0) {
     scale = cw / W;
@@ -127,7 +146,7 @@ export function computePageScale({ clientWidth, clientHeight, spec, fallbackWidt
   const cssW = W * scale;
   const cssH = H * scale;
   // Whole pixels keep the hairline grid crisp.
-  const offsetX = contain && cw > cssW ? Math.floor((cw - cssW) / 2) : 0;
+  const offsetX = centered && cw > cssW ? Math.floor((cw - cssW) / 2) : 0;
   return { scale, cssW, cssH, offsetX };
 }
 
@@ -395,8 +414,15 @@ export function createPageElements(viewportEl) {
   return { pageEl, gridEl, eventsEl };
 }
 
+/** data-fit of a page: its spec's fit ('width' | 'contain' | 'grid'); anything else counts as 'width'. */
+export function pageFitOf(spec) {
+  const fit = spec?.fit;
+  return fit === 'contain' || fit === 'grid' ? fit : 'width';
+}
+
 /**
- * Sizes the page for the viewport (see computePageScale) and sets the CSS var --s = scale.
+ * Sizes the page for the viewport (see computePageScale), sets the CSS var --s = scale and
+ * data-fit (pageFitOf: styles and keepPageInPlace use it).
  * @returns {{ scale: number, cssW: number, cssH: number, offsetX: number }}
  */
 export function applyPageScale({ viewportEl, pageEl, spec }) {
@@ -412,7 +438,7 @@ export function applyPageScale({ viewportEl, pageEl, spec }) {
     st.height = `${res.cssH}px`;
     st.marginLeft = res.offsetX ? `${res.offsetX}px` : '';
     st.setProperty('--s', String(res.scale));
-    if (pageEl.dataset) pageEl.dataset.fit = spec?.fit === 'contain' ? 'contain' : 'width';
+    if (pageEl.dataset) pageEl.dataset.fit = pageFitOf(spec);
   }
   return res;
 }
@@ -563,15 +589,20 @@ export function keepNowLineCurrent({
  * screen. The sticky header is the 'auto' grid row right above the scroll container, so a header that
  * grows (all-day rows arriving with the events, the day page's 「他n件」 toggle…) pushes the viewport —
  * and the page under the Pencil — down; a stroke in progress would jump by that amount, and the next
- * characters would land offset from the previous ones. For scrolling pages (fit 'width') the viewport is
- * scrolled by the same delta, so the page keeps its exact on-screen position. 'contain' pages (month)
- * do not scroll and are left alone.
+ * characters would land offset from the previous ones. For scrolling pages (fit 'width' and 'grid' —
+ * the month page scrolls down to its memo area) the viewport is scrolled by the same delta, so the page
+ * keeps its exact on-screen position. 'contain' pages do not scroll and are left alone, and so is a 'grid'
+ * page scrolled to its very top (it stays at the top).
  */
 export function keepPageInPlace(pageEl, fit, fn) {
   // Right after a page is first shown (main.js sets data-settling until the first touch/scroll), nobody
   // is writing yet: keep the initial scroll (the hour before now) at the top instead of compensating.
   const settling = pageEl?.dataset?.settling === '1';
-  const vp = fit === 'contain' || settling ? null : pageEl?.parentNode;
+  let vp = fit === 'contain' || settling ? null : pageEl?.parentNode;
+  // A month page (fit 'grid') at its top stays at its top: the whole grid is meant to fit the screen, and
+  // a banner appearing above it must not scroll the first week under the header (main.js relayout() then
+  // fits the grid into the shorter viewport). Banners never appear mid-stroke (main.js defers them).
+  if (vp && fit === 'grid' && !((Number(vp.scrollTop) || 0) > 0)) vp = null;
   const topOf = () => {
     const r = pageEl.getBoundingClientRect();
     return Number(r?.top);
@@ -590,6 +621,56 @@ export function keepPageInPlace(pageEl, fit, fn) {
       });
     }
   }
+}
+
+// ---- scroll position (main.js: leaving / revisiting a page, the Google sign-in round trip, relayout)
+
+/**
+ * The scroll position remembered when a page is left (or reloaded through the Google sign-in): the ratio
+ * of the viewport centre over the content height — or null, nothing to remember: no content yet, or a
+ * 'grid' page (month) at its very top. The centre ratio of the top depends on the orientation (portrait
+ * shows nearly the whole month page, landscape about 60 % of it), so restoring it after a rotation would
+ * scroll the first weeks out of view; a month page left at its top opens at its top again instead.
+ * @param {string} fit the page's fit ('width' | 'grid' | 'contain')
+ * @param {{ scrollTop: number, clientHeight: number, scrollHeight: number }} vp the viewport (or its metrics)
+ * @returns {number|null}
+ */
+export function scrollMemoryRatio(fit, vp) {
+  const sh = Number(vp?.scrollHeight);
+  if (!(sh > 0)) return null;
+  const top = Number(vp?.scrollTop) || 0;
+  if (fit === 'grid' && top <= 0) return null;
+  const ratio = (top + (Number(vp?.clientHeight) || 0) / 2) / sh;
+  return Number.isFinite(ratio) ? ratio : null;
+}
+
+/** scrollTop that brings a remembered ratio (viewport centre / content height) back to the centre, in range. */
+export function scrollTopForRatio(ratio, { clientHeight, scrollHeight } = {}) {
+  const sh = Number(scrollHeight) || 0;
+  const ch = Number(clientHeight) || 0;
+  const max = Math.max(0, sh - ch);
+  const y = ratio * sh - ch / 2;
+  return y < 0 ? 0 : y > max ? max : y;
+}
+
+/**
+ * scrollTop after the viewport changed size and the page was laid out again (main.js relayout), or null to
+ * leave it as it is. Same width and scale (a banner or the header changed the height): the paper stays
+ * where it was on screen (scrollTop moves with the viewport's top edge). A 'grid' page (month) that was at
+ * its very top stays at the top, so its whole grid is in view — also when a banner made the viewport
+ * shorter and the grid smaller. Otherwise (rotation, split view…) the remembered centre ratio comes back.
+ * @param {{ fit: string, sameWidth: boolean, sameScale: boolean, prevTop: number, top: number,
+ *           scrollTop: number, ratio: number|null, clientHeight: number, scrollHeight: number }} o
+ *        prevTop / top: the viewport's client top before / after; scrollTop / ratio: before the change;
+ *        clientHeight / scrollHeight: after it
+ * @returns {number|null}
+ */
+export function scrollTopAfterRelayout({ fit, sameWidth, sameScale, prevTop, top, scrollTop, ratio, clientHeight, scrollHeight } = {}) {
+  const before = Number(scrollTop) || 0;
+  if (sameWidth && sameScale && Number.isFinite(prevTop) && Number.isFinite(top)) return before + (top - prevTop);
+  if (fit === 'grid' && before <= 0) return 0;
+  if (ratio === null || !Number.isFinite(ratio)) return null;
+  return scrollTopForRatio(ratio, { clientHeight, scrollHeight });
 }
 
 /** Normalized layout (falls back to the page's own size when the caller passed nothing usable). */
@@ -648,6 +729,7 @@ export function beginRender(params, view, spec, computeRange) {
     settings: p.settings && typeof p.settings === 'object' ? p.settings : {},
     onEventTap: typeof p.onEventTap === 'function' ? p.onEventTap : noop,
     onDayTap: typeof p.onDayTap === 'function' ? p.onDayTap : noop,
+    onMonthTap: typeof p.onMonthTap === 'function' ? p.onMonthTap : noop,
   };
 }
 

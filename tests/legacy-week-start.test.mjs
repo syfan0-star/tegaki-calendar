@@ -6,14 +6,17 @@ import {
 } from '../js/ink/legacy-week-start.js';
 import { addStrokes, emptyPage, liveStrokes, mergePages, removeStrokes, sameContent } from '../js/ink/model.js';
 import { strokeBBox } from '../js/ink/geometry.js';
-import { PAGE_SPECS, pageIdFor, rangeFor } from '../js/views/page-geometry.js';
+import { PAGE_SPECS, monthCellAt, pageIdFor, rangeFor } from '../js/views/page-geometry.js';
 import { addDays, addMonths, isSameDay, parseYMD, toYMD } from '../js/util/date.js';
 
 const WEEK = PAGE_SPECS.week;
 const COL_W = (WEEK.W - WEEK.gutter) / 7;
 const MONTH = PAGE_SPECS.month;
 const CELL_W = MONTH.W / 7;
-const CELL_H = MONTH.H / 6;
+// The date grid is gridH tall (the page continues below it with the memo area since 1.0.5); the old
+// Sunday-start month pages were exactly that grid.
+const GRID_H = MONTH.gridH;
+const CELL_H = GRID_H / 6;
 
 /** A small stroke centred on (x, y). */
 function strokeAt(id, x, y) {
@@ -193,7 +196,7 @@ test('month, all of 2026–2027: each stroke of each old month page is on exactl
         where.set(id, { source: monthKey(first), date: oldDays[i], x, y });
       });
     }
-    for (const [k, [x, y]] of [[MONTH.W + 40, 100], [300, MONTH.H + 30], [-30, 500]].entries()) {
+    for (const [k, [x, y]] of [[MONTH.W + 40, 100], [300, GRID_H + 30], [-30, 500]].entries()) {
       const id = `${monthKey(first)}/off/${k}`;
       strokes.push(strokeAt(id, x, y));
       where.set(id, { source: monthKey(first), date: null, x, y });
@@ -268,7 +271,7 @@ test('a stroke crossing cells stays fully on the month page; strokes already off
   const tall = line('tall', 230, 710, 230, 1000); // centre y=855 → row 4
   const [tallCopy] = legacyStrokesFor('m1-2026-02', { 'm-2026-02': pageWith('m-2026-02', [tall]) });
   const tb = strokeBBox(tallCopy);
-  assert.ok(tb.maxY <= MONTH.H + 0.06, `bottom on the page (maxY ${tb.maxY})`);
+  assert.ok(tb.maxY <= GRID_H + 0.06, `bottom on the grid, not pushed into the memo area (maxY ${tb.maxY})`);
   const t = shiftOf(tallCopy, tall);
   assert.equal(t.dx, -CELL_W);
   assert.ok(t.dy > 0 && t.dy < CELL_H);
@@ -277,6 +280,40 @@ test('a stroke crossing cells stays fully on the month page; strokes already off
   const out = line('out', -40, 260, 120, 260); // centre x=40 → col 0, row 1
   const [outCopy] = legacyStrokesFor('m1-2026-10', { 'm-2026-10': pageWith('m-2026-10', [out]) });
   assert.deepEqual(shiftOf(outCopy, out), { dx: 1200, dy: -CELL_H });
+});
+
+test('month since 1.0.5 (memo area below the grid): copies land on the grid cells of their dates, never in the memo area', () => {
+  assert.equal(MONTH.gridH, 1050, 'the old pages were 1400×1050: the grid kept that size');
+  assert.ok(MONTH.H > MONTH.gridH);
+  // Strokes everywhere on the old grids of 2026 (cell centres, and tall strokes filling a cell's height).
+  for (let first = parseYMD('2026-01-01'); first <= parseYMD('2026-12-01'); first = addMonths(first, 1)) {
+    const sourceId = `m-${monthKey(first)}`;
+    const oldDays = rangeFor('month', first, 0).days;
+    const strokes = [];
+    const dateOf = new Map();
+    for (let i = 0; i < 42; i++) {
+      const row = Math.floor(i / 7);
+      const col = i % 7;
+      strokes.push(strokeAt(`c${i}`, ...cell(row, col)));
+      strokes.push(line(`t${i}`, (col + 0.5) * CELL_W, row * CELL_H + 4, (col + 0.5) * CELL_W, (row + 1) * CELL_H - 4));
+      dateOf.set(`c${i}`, oldDays[i]);
+      dateOf.set(`t${i}`, oldDays[i]);
+    }
+    const docs = { [sourceId]: pageWith(sourceId, strokes) };
+    for (const target of [addMonths(first, -1), first, addMonths(first, 1)]) {
+      const range = rangeFor('month', target, 1);
+      for (const copy of legacyStrokesFor(`m1-${monthKey(target)}`, docs)) {
+        const b = strokeBBox(copy);
+        assert.ok(b.maxY <= MONTH.gridH + 0.06, `${copy.id} stays above the memo area (maxY ${b.maxY})`);
+        // Read back with the app's own geometry: the cell under the copy is the stroke's date.
+        const at = monthCellAt((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+        assert.ok(at, `${copy.id} is on the grid`);
+        const id = copy.id.slice(0, -LEGACY_SUFFIX.length);
+        assert.ok(isSameDay(range.days[at.row * 7 + at.col], dateOf.get(id)),
+          `${id} of ${sourceId} on ${toYMD(dateOf.get(id))} (got ${toYMD(range.days[at.row * 7 + at.col])})`);
+      }
+    }
+  }
 });
 
 test('copies are idempotent and an erased copy stays erased', () => {

@@ -6,12 +6,16 @@
 // Timed events follow as one-line chips, as many as fit in the top ~60% of the cell (the rest:
 // '+n件'), so the lower part stays free for handwriting. The sticky header shows the weekday labels
 // aligned with the columns.
+// Below the grid (y ≥ gridH) the page continues as a free memo area (メモ欄) with faint ruled lines, part
+// of the same ink page. The page is sized so the whole grid fits the screen (fit 'grid') and the viewport
+// scrolls down to the memo area.
 
 import { PAGE_SPECS, monthCellRect, rangeFor } from './page-geometry.js';
 import { allDayRowsForRange, eventsOnDay } from './event-layout.js';
 import { WEEKDAYS_JA, addDays, formatDateJa, formatTimeJa, isValidDate, startOfMonth } from '../util/date.js';
 import { getHolidayName } from '../util/holidays-jp.js';
 import {
+  TYPE,
   beginRender,
   dayClassList,
   dayFlags,
@@ -20,9 +24,11 @@ import {
   eventColorVars,
   eventTitle,
   fitChips,
+  fontLu,
   gridPath,
   htmlEl,
   keepNowLineCurrent,
+  keepPageInPlace,
   monthCellMetrics,
   onActivate,
   pct,
@@ -35,8 +41,14 @@ const VIEW = 'month';
 const SPEC = PAGE_SPECS.month;
 const COLS = SPEC.cols;
 const ROWS = SPEC.rows;
+/** Height of the date grid; the memo area fills the rest of the page (SPEC.H). */
+const GRID_H = SPEC.gridH;
+const MEMO_TOP = SPEC.memoTop ?? GRID_H;
 const CELL_W = SPEC.W / COLS;
-const CELL_H = SPEC.H / ROWS;
+const CELL_H = GRID_H / ROWS;
+/** Memo area: ruled line spacing and side insets (lu), as on the day page. */
+const RULE_STEP = 50;
+const RULE_INSET = 20;
 
 function cellRect(row, col) {
   return monthCellRect(row, col) || { x: col * CELL_W, y: row * CELL_H, w: CELL_W, h: CELL_H };
@@ -65,10 +77,28 @@ function buildGrid(ctx, cells) {
     frag.append(svgEl('rect', { class: cls, x: r.x, y: r.y, width: r.w, height: r.h }));
   }
   let d = '';
-  for (let col = 1; col < COLS; col++) d += `M${col * CELL_W} 0V${SPEC.H}`;
+  for (let col = 1; col < COLS; col++) d += `M${col * CELL_W} 0V${GRID_H}`;
   for (let row = 1; row < ROWS; row++) d += `M0 ${row * CELL_H}H${SPEC.W}`;
   frag.append(gridPath('g-vline', d));
+  appendMemoArea(frag, ctx.scale);
   ctx.gridEl.replaceChildren(frag);
+}
+
+/**
+ * The memo area below the grid: separated from it by a line, faint ruled lines every RULE_STEP lu and a
+ * small 「メモ」 label at its top-left (like the day page's memo column).
+ */
+function appendMemoArea(parent, scale) {
+  const { W, H } = SPEC;
+  let rules = '';
+  for (let y = MEMO_TOP + RULE_STEP; y < H; y += RULE_STEP) rules += `M${RULE_INSET} ${y}H${W - RULE_INSET}`;
+  parent.append(gridPath('g-rule', rules), gridPath('g-sep', `M0 ${GRID_H}H${W}`));
+  const memoLu = fontLu(TYPE.memoLabel, scale);
+  const memo = svgEl('text', {
+    class: 'g-memo-label', x: RULE_INSET, y: MEMO_TOP + Math.min(RULE_STEP - 8, 10 + memoLu), 'font-size': memoLu,
+  });
+  memo.textContent = 'メモ';
+  parent.append(memo);
 }
 
 /** Time text of a timed chip on `day` ('9:00', '〜11:00' for the tail of an overnight event). */
@@ -334,9 +364,12 @@ function buildSticky(ctx, cells) {
 export function render(params) {
   const ctx = beginRender(params, VIEW, SPEC, (date) => rangeFor(VIEW, date, params?.settings?.weekStart ?? 1));
   const cells = cellInfos(ctx);
-  buildGrid(ctx, cells);
-  buildCells(ctx, cells);
-  buildSticky(ctx, cells);
+  // The page scrolls (down to the memo area): it stays put on screen if the sticky header's height changes.
+  keepPageInPlace(ctx.pageEl, SPEC.fit, () => {
+    buildGrid(ctx, cells);
+    buildCells(ctx, cells);
+    buildSticky(ctx, cells);
+  });
   // No now line here, but after midnight the today circle / tint must move to the new day.
   keepNowLineCurrent({
     gridEl: ctx.gridEl,
@@ -345,7 +378,7 @@ export function render(params) {
   });
 }
 
-/** The month page does not scroll; exported for API symmetry with the day/week views. */
+/** The month page is first shown from its top (the whole grid); exported for API symmetry with day/week. */
 export function initialScrollMinutes() {
   return 0;
 }

@@ -29,6 +29,7 @@ import {
   INK_DB_NAMES, inkDbName, decideInkAccount, silentReauthReady, shouldRedirectBeforeUi, returnScrollRatio,
   DRAFT_KEY, DRAFT_MAX_AGE_MS, normalizeEventInput, encodeDraft, parseDraft,
   encodeEventsEntry, decodeEventsEntry, touchLru, offlineBannerText, shouldOfferUpdate,
+  eventsKeptForView, periodicRefreshDue,
 } from './state.js';
 import { createAuth } from './google/auth.js';
 import { createHttp, AuthRequiredError, ApiError } from './google/http.js';
@@ -46,23 +47,27 @@ import { InkSurface } from './ink/surface.js';
 import {
   VIEWS, PAGE_SPECS, pageIdFor, rangeFor, navigate, minutesToY, rectToEventRange, snapEventRect,
 } from './views/page-geometry.js';
-import { createPageElements, applyPageScale } from './views/view-common.js';
+import {
+  createPageElements, applyPageScale, scrollMemoryRatio, scrollTopForRatio, scrollTopAfterRelayout,
+} from './views/view-common.js';
 import * as dayView from './views/day-view.js';
 import * as weekView from './views/week-view.js';
 import * as monthView from './views/month-view.js';
+import * as yearView from './views/year-view.js';
 import { createHeader } from './ui/header.js';
 import { createToolbar } from './ui/toolbar.js';
 import { createSelectionMenu } from './ui/selection-menu.js';
 import { openEventDialog } from './ui/event-dialog.js';
 import { openSettings } from './ui/settings.js';
 import { toast, showBanner, hideBanner } from './ui/toast.js';
+import { createTwoFingerTapRecognizer, touchPoints, twoFingerTapTool } from './ui/gestures.js';
 import { toYMD, startOfDay, atMinutes, minutesOfDay, clamp } from './util/date.js';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------------------------
 
-const VIEW_MODULES = { day: dayView, week: weekView, month: monthView };
+const VIEW_MODULES = { day: dayView, week: weekView, month: monthView, year: yearView };
 
 const EVENTS_STALE_MS = 60 * 1000;             // cached events younger than this are not refetched
 const EVENTS_REFRESH_MS = 5 * 60 * 1000;       // periodic refresh while visible
@@ -95,7 +100,8 @@ const NOT_CONFIGURED_MESSAGE = 'Google連携の設定がまだ済んでいませ
 const ACCOUNT_MISMATCH_MESSAGE = '前回とは別のGoogleアカウントでログインしています。この端末の手書きは前のアカウントのものなので、'
   + 'Googleドライブへの同期を止めました（前のアカウントでログインし直すと同期します）';
 const TOOL_KEYS = { p: 'pen', h: 'highlighter', e: 'eraser', l: 'lasso', v: 'event' };
-const VIEW_KEYS = { d: 'day', w: 'week', m: 'month' };
+const VIEW_KEYS = { d: 'day', w: 'week', m: 'month', y: 'year' };
+const TOOL_TOAST_MS = 1000;                    // 「消しゴム」/「ペン」 after a two-finger tap
 const SETTINGS_DIALOG_KEYS = ['allowFinger', 'eraseInkAfterConvert', 'hiddenCalendarIds', 'defaultCalendarId'];
 const WRITER_LOCK = 'tegaki-writer';           // Web Lock: the newest tab (window) of the app is the live one
 const STORAGE_DEGRADED_MESSAGE = 'この端末に手書きを保存できない状態になりました。再読み込みしてください（Googleに同期済みの手書きは消えません）';
@@ -134,11 +140,13 @@ const S = {
   eventsInflight: new Map(), // cacheId → Promise
   eventsSeq: new Map(),      // cacheId → latest request number
   seq: 0,
-  scrollMemory: new Map(),   // pageId → scroll ratio (revisits keep their position)
+  scrollMemory: new Map(),   // pageId → scroll ratio (revisits keep their position; every page that scrolls)
   settlingCleanup: null,     // ends the 'just shown' state of the page (see markSettling)
   lastSize: { w: 0, h: 0 },
-  pointersDown: new Set(),
+  pointersDown: new Map(),   // pointerId → pointerType of the ink contacts down on the page (pen, mouse, finger)
   lastPointerAt: 0,
+  lastCommitAt: 0,           // ms of the last ink change made by the user (surface onCommit)
+  toolToast: null,           // the 「消しゴム」/「ペン」 toast of the last two-finger tap
   lastInputAt: 0,
   dialogOpen: false,
   welcomeOpen: false,
@@ -526,7 +534,7 @@ function rememberReturnScroll(redirect) {
   if (ratio === null) return;
   try {
     const pageId = pageIdFor(S.route.view, S.route.date, S.settings.get().weekStart);
-    if (PAGE_SPECS[S.route.view]?.fit === 'width') S.scrollMemory.set(pageId, ratio);
+    if (pageScrolls(PAGE_SPECS[S.route.view])) S.scrollMemory.set(pageId, ratio);
   } catch (err) {
     warn('could not restore the scroll position', describe(err));
   }
@@ -1155,8 +1163,8 @@ function goRelative(delta) {
 function goToday() {
   const today = startOfDay(new Date());
   const p = S.page;
-  if (p && pageContainsDay(p, today) && p.spec.fit === 'width') {
-    if (!isDrawing()) scrollToInitial(p, { smooth: true });
+  if (p && pageContainsDay(p, today) && pageScrolls(p.spec)) {
+    if (!isDrawing()) scrollToInitial(p, { smooth: true }); // today's hour / row; the month grid's top
     return;
   }
   goTo(S.route.view, today);
@@ -1221,8 +1229,12 @@ function showRoute() {
 
 /** Bookkeeping when navigating away from a page. */
 function leavePage(prev) {
-  const ratio = scrollRatio();
-  if (ratio !== null && prev.spec.fit === 'width') S.scrollMemory.set(prev.pageId, ratio);
+  if (pageScrolls(prev.spec)) {
+    // A month page left at its very top is not remembered: it opens at its top again in either orientation.
+    const ratio = scrollMemoryRatio(prev.spec.fit, S.els.viewport);
+    if (ratio !== null) S.scrollMemory.set(prev.pageId, ratio);
+    else if (prev.spec.fit === 'grid') S.scrollMemory.delete(prev.pageId);
+  }
   if (S.scrollMemory.size > 60) S.scrollMemory.delete(S.scrollMemory.keys().next().value);
   S.surface?.clearSelection();
   savePendingLocal(prev);
@@ -1240,6 +1252,9 @@ function savePendingLocal(p) {
 
 function layoutPage(p) {
   const vp = S.els.viewport;
+  // Before measuring: the month page gives the toolbar its own strip (styles/app.css #app[data-fit]).
+  const app = S.els.app;
+  if (app?.dataset && app.dataset.fit !== p.spec.fit) app.dataset.fit = p.spec.fit;
   p.layout = applyPageScale({ viewportEl: vp, pageEl: S.pageEls.pageEl, spec: p.spec });
   S.lastSize = { w: vp.clientWidth, h: vp.clientHeight };
 }
@@ -1275,6 +1290,7 @@ function renderViewNow(p) {
       now: new Date(),
       onEventTap: guard((ev) => editEventFlow(ev), 'event-tap'),
       onDayTap: guard((day) => goTo('day', day), 'day-tap'),
+      onMonthTap: guard((month) => goTo('month', month), 'month-tap'), // year page: a month name
     });
   } catch (err) {
     warn('render failed', describe(err));
@@ -1283,6 +1299,14 @@ function renderViewNow(p) {
 }
 
 // ---- scrolling
+
+/**
+ * Pages that scroll vertically: fit 'width' (day / week / year) and fit 'grid' (month: the grid fills the
+ * screen, the メモ欄 below it is scrolled to). Only fit 'contain' sits still.
+ */
+function pageScrolls(spec) {
+  return !!spec && (spec.fit === 'width' || spec.fit === 'grid');
+}
 
 /** Scroll position as the ratio of the viewport center over the content height (null if no scroll). */
 function scrollRatio() {
@@ -1295,15 +1319,17 @@ function scrollRatio() {
 function restoreScrollRatio(ratio) {
   if (ratio === null || !Number.isFinite(ratio)) return;
   const vp = S.els.viewport;
-  const max = Math.max(0, vp.scrollHeight - vp.clientHeight);
-  vp.scrollTop = clamp(ratio * vp.scrollHeight - vp.clientHeight / 2, 0, max);
+  vp.scrollTop = scrollTopForRatio(ratio, vp);
 }
 
-/** First show of a page: day/week scroll to initialScrollMinutes (revisits restore their position). */
+/**
+ * First show of a page (revisits restore their position): a view exporting initialScrollY (year: today's
+ * row) goes to that logical y; day/week to initialScrollMinutes; month (fit 'grid') to the top of its grid.
+ */
 function scrollToInitial(p, { smooth = false } = {}) {
   const vp = S.els.viewport;
   vp.scrollLeft = 0;
-  if (p.spec.fit !== 'width') {
+  if (!pageScrolls(p.spec)) {
     vp.scrollTop = 0;
     return;
   }
@@ -1311,20 +1337,41 @@ function scrollToInitial(p, { smooth = false } = {}) {
     restoreScrollRatio(S.scrollMemory.get(p.pageId));
     return;
   }
-  let minutes = 7 * 60;
-  try {
-    const m = VIEW_MODULES[p.view].initialScrollMinutes({
-      date: p.date, now: new Date(), range: p.range, weekStart: S.settings.get().weekStart,
-    });
-    if (Number.isFinite(m)) minutes = clamp(m, 0, 1440);
-  } catch (err) {
-    warn('initialScrollMinutes failed', describe(err));
-  }
-  const y = minutesToY(p.view, minutes) * (p.layout?.scale || 1);
+  const y = initialScrollY(p) * (p.layout?.scale || 1);
   const top = clamp(y, 0, Math.max(0, vp.scrollHeight - vp.clientHeight));
   if (smooth && typeof vp.scrollTo === 'function') vp.scrollTo({ top, behavior: 'smooth' });
   else vp.scrollTop = top;
   markSettling();
+}
+
+/** Logical y shown at the top of the viewport when a page first opens (0 when the view has no opinion). */
+function initialScrollY(p) {
+  const mod = VIEW_MODULES[p.view];
+  const now = new Date();
+  if (typeof mod?.initialScrollY === 'function') {
+    try {
+      const y = mod.initialScrollY({ date: p.date, now, range: p.range });
+      return Number.isFinite(y) ? clamp(y, 0, p.spec.H) : 0;
+    } catch (err) {
+      warn('initialScrollY failed', describe(err));
+      return 0;
+    }
+  }
+  // Timelines (day / week): the hour to start at. minutesToY only knows views with an hour grid.
+  if (!Number.isFinite(p.spec.hourH)) return 0;
+  let minutes = 7 * 60;
+  try {
+    const m = mod.initialScrollMinutes({ date: p.date, now, range: p.range, weekStart: S.settings.get().weekStart });
+    if (Number.isFinite(m)) minutes = clamp(m, 0, 1440);
+  } catch (err) {
+    warn('initialScrollMinutes failed', describe(err));
+  }
+  try {
+    return minutesToY(p.view, minutes);
+  } catch (err) {
+    warn('minutesToY failed', describe(err));
+    return 0;
+  }
 }
 
 /**
@@ -1389,13 +1436,19 @@ function relayout() {
   const ratio = scrollRatio();
   const scrollTop = vp.scrollTop;
   const prevTop = S.lastTop;
+  const prevScale = p.layout?.scale;
   layoutPage(p);
   renderView();
   S.surface?.resize();
   const top = viewportTop();
-  if (p.spec.fit === 'width') {
-    if (sameWidth && Number.isFinite(prevTop) && Number.isFinite(top)) vp.scrollTop = scrollTop + (top - prevTop);
-    else restoreScrollRatio(ratio);
+  if (pageScrolls(p.spec)) {
+    // fit 'grid' also scales with the viewport height: a taller banner can shrink the month page, and a
+    // month page at its top stays at its top (the whole grid in view).
+    const y = scrollTopAfterRelayout({
+      fit: p.spec.fit, sameWidth, sameScale: p.layout?.scale === prevScale, prevTop, top, scrollTop, ratio,
+      clientHeight: vp.clientHeight, scrollHeight: vp.scrollHeight,
+    });
+    if (y !== null) vp.scrollTop = y;
   }
   S.lastTop = top;
 }
@@ -1512,6 +1565,7 @@ function applyRemoteInk(pageId, doc) {
 }
 
 function handleCommit(doc) {
+  S.lastCommitAt = Date.now();
   updateToolbar();
   if (!doc || typeof doc !== 'object') return;
   const p = S.page;
@@ -1634,7 +1688,8 @@ function loadEvents(p, { force = false } = {}) {
       if (!force && entry && entry.key === key && Date.now() - entry.at < EVENTS_STALE_MS) return;
       const events = ids.length ? await S.source.listEvents(ids, range.start, range.end) : [];
       if (S.eventsSeq.get(cacheId) !== seq) return; // a newer request owns this page
-      let list = Array.isArray(events) ? [...events] : [];
+      // The year page keeps only its all-day events (cache and offline copy).
+      let list = [...eventsKeptForView(p.view, events)];
       // Some calendars failed (the rest is fine): keep what we knew of those instead of showing them as gone.
       const failedIds = Array.isArray(events?.failedCalendarIds) ? events.failedCalendarIds : [];
       const latest = S.eventsCache.get(cacheId);
@@ -1722,7 +1777,7 @@ function applyEventChange({ added = null, removed = null } = {}) {
   if (removed) list = list.filter((e) => !(e.id === removed.id && e.calendarId === removed.calendarId));
   if (added && isValidDate(added.start) && isValidDate(added.end)
     && added.start < p.range.end && added.end > p.range.start) {
-    list = [...list.filter((e) => !(e.id === added.id && e.calendarId === added.calendarId)), added];
+    list = eventsKeptForView(p.view, [...list.filter((e) => !(e.id === added.id && e.calendarId === added.calendarId)), added]);
   }
   S.eventsCache.set(p.cacheId, { ...entry, events: list, at: 0 });
   renderView();
@@ -2531,7 +2586,8 @@ async function startSignIn({ silent = false, consent = false } = {}) {
     }
     S.leaving = true;
     const returnState = { view: S.route.view, date: toYMD(S.route.date) };
-    const ratio = S.page && S.page.spec.fit === 'width' ? scrollRatio() : null;
+    // (a month page at its very top carries none: it comes back at its top, whatever the orientation)
+    const ratio = S.page && pageScrolls(S.page.spec) ? scrollMemoryRatio(S.page.spec.fit, S.els.viewport) : null;
     if (Number.isFinite(ratio)) returnState.scroll = Math.round(clamp(ratio, 0, 1) * 10000) / 10000;
     const opts = { silent, returnState };
     if (consent) Object.assign(opts, { consent: true, prompt: 'consent' });
@@ -2937,6 +2993,7 @@ function installInteractions() {
   installDrawingTracker(pageEl);
   document.addEventListener('keydown', guard(handleKeydown, 'keydown'));
   installSwipe(vp);
+  installTwoFingerTap(vp);
 
   const onResize = () => requestAnimationFrame(guard(relayout, 'relayout'));
   if (typeof ResizeObserver === 'function') {
@@ -2968,7 +3025,7 @@ function installDrawingTracker(pageEl) {
   const down = (e) => {
     S.lastPointerAt = Date.now();
     if (!inkPointer(e)) return;
-    S.pointersDown.add(e.pointerId);
+    S.pointersDown.set(e.pointerId, e.pointerType);
     // The selection may be dragged: keep its menu out of the way until the gesture ends.
     if (S.surface?.getSelection()) S.ui.selectionMenu.hide();
   };
@@ -3000,6 +3057,15 @@ function isDrawing() {
     return false;
   }
   return true;
+}
+
+/** Ink contacts of one kind down on the page: 'pen' (Pencil or mouse) or 'touch' (指・マウスでも書く). */
+function contactsDown(kind) {
+  if (!isDrawing()) return false;
+  for (const type of S.pointersDown.values()) {
+    if (kind === 'touch' ? type === 'touch' : type !== 'touch') return true;
+  }
+  return false;
 }
 
 function isEditableTarget(t) {
@@ -3078,6 +3144,70 @@ function installSwipe(vp) {
     if (S.dialogOpen || isDrawing() || S.settings.get().allowFinger) return;
     goRelative(dx < 0 ? 1 : -1);
   }, 'swipe'), { passive: true });
+}
+
+/**
+ * Two-finger tap on the page → pen ↔ eraser. Apple Pencil's double-tap / squeeze never reaches a web page
+ * (UIPencilInteraction is native-only), so this is the quick switch. Passive listeners: the touches keep
+ * scrolling and tapping as before, the swipe needs one finger, and Safari's pinch stays blocked
+ * (gesturestart). The rules are in ui/gestures.js.
+ */
+function installTwoFingerTap(vp) {
+  const tap = createTwoFingerTapRecognizer();
+  const opts = { capture: true, passive: true };
+  const scroll = () => ({ top: vp.scrollTop, left: vp.scrollLeft });
+  const snapshot = (e) => ({
+    touches: touchPoints(e.touches),
+    changed: touchPoints(e.changedTouches),
+    at: Date.now(),
+    scroll: scroll(),
+    blocked: twoFingerTapBlocked(),
+  });
+  vp.addEventListener('touchstart', guard((e) => tap.start(snapshot(e)), 'two-finger-tap'), opts);
+  vp.addEventListener('touchmove', guard((e) => tap.move({ touches: touchPoints(e.touches) }), 'two-finger-tap'), opts);
+  vp.addEventListener('touchcancel', () => tap.cancel(), opts);
+  vp.addEventListener('scroll', () => tap.scrolled(), { passive: true });
+  vp.addEventListener('touchend', guard((e) => {
+    const hit = tap.end(snapshot(e));
+    if (!hit) return;
+    // Decided after the ink surface has handled the release too (指・マウスでも書く: a finger stroke is
+    // committed on pointerup): fingers that wrote are not a tap.
+    setTimeout(guard(() => {
+      if (twoFingerTapBlocked() || fingerInkDuring(hit.startAt)) return;
+      toggleEraserByTap();
+    }, 'two-finger-tap'), 0);
+  }, 'two-finger-tap'), opts);
+}
+
+/** No two-finger tap while the pen is down, a dialog is open or the app is leaving. */
+function twoFingerTapBlocked() {
+  return S.dialogOpen || S.settingsOpening || S.welcomeOpen || S.leaving || !!S.shield || S.stale
+    || contactsDown('pen');
+}
+
+/** 指・マウスでも書く: a finger stroke was in progress (or committed) during the gesture → it was writing. */
+function fingerInkDuring(startAt) {
+  if (!S.settings.get().allowFinger) return false;
+  return contactsDown('touch') || S.lastCommitAt >= startAt;
+}
+
+/** Eraser ⇄ the last ink tool (pen or highlighter), exactly like a toolbar tap, with a short toast. */
+function toggleEraserByTap() {
+  const st = S.settings.get();
+  const next = twoFingerTapTool(st.tool, st.lastInkTool);
+  selectTool(next.tool);
+  if (S.settings.get().tool !== next.tool) return;
+  try {
+    S.toolToast?.dismiss();
+  } catch {
+    // already gone
+  }
+  S.toolToast = null;
+  try {
+    S.toolToast = toast(next.label, { duration: TOOL_TOAST_MS });
+  } catch (err) {
+    warn('toast failed', describe(err));
+  }
 }
 
 function onHidden() {
@@ -3167,7 +3297,10 @@ function startPeriodicRefresh() {
   if (S.refreshTimer) return;
   S.refreshTimer = setInterval(guard(() => {
     if (document.visibilityState !== 'visible' || S.leaving || !S.page) return;
-    if (!S.dialogOpen) loadEvents(S.page, { force: true });
+    // The year page (a whole year of events) refetches on every third tick only.
+    const at = S.eventsCache.get(S.page.cacheId)?.at || 0;
+    const due = periodicRefreshDue({ view: S.page.view, at, now: Date.now(), intervalMs: EVENTS_REFRESH_MS });
+    if (!S.dialogOpen && due) loadEvents(S.page, { force: true });
     // Unsent ink (a failed or cut-off upload) is retried here too, not only on the next save of that page.
     if (S.inkStore && S.mode === 'google' && ['pending', 'error', 'offline'].includes(S.syncStatus) && isOnline()) {
       S.inkStore.flush().catch((err) => warn('periodic flush failed', describe(err)));

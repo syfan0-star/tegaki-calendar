@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 import { APP_VERSION } from '../js/config.js';
+import { VIEWS } from '../js/views/page-geometry.js';
+import { VIEW_NAMES } from '../js/state.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
@@ -36,6 +38,107 @@ test('sw.js VERSION equals APP_VERSION (cache name follows the app version)', ()
   const m = SW_SOURCE.match(/const VERSION = '([^']+)'/);
   assert.ok(m);
   assert.equal(m[1], APP_VERSION);
+});
+
+test('version 1.0.5 everywhere: config.js, sw.js and package.json agree', () => {
+  assert.equal(APP_VERSION, '1.0.5');
+  assert.equal(JSON.parse(read('package.json')).version, APP_VERSION);
+});
+
+test('APP_FILES precaches the year page and the two-finger tap module', () => {
+  const files = appFiles();
+  assert.ok(files.includes('js/views/year-view.js'));
+  assert.ok(files.includes('js/ui/gestures.js'));
+});
+
+/** Source of a top-level function of main.js (from its declaration to the closing brace at column 0). */
+function mainFunction(src, name) {
+  let start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) start = src.indexOf(`\nasync function ${name}(`);
+  assert.ok(start >= 0, `main.js: function ${name} not found`);
+  const end = src.indexOf('\n}\n', start);
+  return src.slice(start, end + 2);
+}
+
+test('main.js: every page view has a module, a route name and a keyboard shortcut (日 週 月 年)', () => {
+  const src = read('js/main.js');
+  assert.match(src, /import \* as yearView from '\.\/views\/year-view\.js';/);
+  const modules = src.match(/const VIEW_MODULES = \{([^}]*)\}/);
+  assert.ok(modules);
+  const keys = [...modules[1].matchAll(/(\w+):/g)].map((m) => m[1]);
+  assert.deepEqual([...VIEWS], [...VIEW_NAMES], 'state.js routes = page-geometry views');
+  for (const v of VIEWS) assert.ok(keys.includes(v), `VIEW_MODULES lacks ${v}`);
+  assert.match(src, /const VIEW_KEYS = \{[^}]*y: 'year'[^}]*\}/);
+  // The year page's month names open that month; every view gets the callback.
+  assert.match(mainFunction(src, 'renderViewNow'), /onMonthTap: guard\(\(month\) => goTo\('month', month\)/);
+});
+
+test('main.js: scrolling pages (width / grid) share scroll memory; minutesToY only for hour grids', () => {
+  const src = read('js/main.js');
+  assert.match(mainFunction(src, 'pageScrolls'), /spec\.fit === 'width' \|\| spec\.fit === 'grid'/);
+  // No fit === 'width' special cases are left: month (grid) scrolls too.
+  assert.doesNotMatch(src, /fit === 'width'\)? ?(\?|&&|\{)/);
+  for (const fn of ['leavePage', 'goToday', 'scrollToInitial', 'relayout', 'rememberReturnScroll']) {
+    assert.match(mainFunction(src, fn), /pageScrolls\(/, fn);
+  }
+  const initial = mainFunction(src, 'initialScrollY');
+  assert.match(initial, /typeof mod\?\.initialScrollY === 'function'/);
+  assert.match(initial, /Number\.isFinite\(p\.spec\.hourH\)/);
+  assert.equal(src.split('minutesToY(').length - 1, 1, 'minutesToY is called only from initialScrollY');
+  // The month page gives the toolbar its own strip before it is measured.
+  assert.match(mainFunction(src, 'layoutPage'), /app\.dataset\.fit = p\.spec\.fit[\s\S]*applyPageScale/);
+  assert.match(read('styles/app.css'), /#app\[data-fit='grid'\] > \.viewport \{\s*margin-bottom:/);
+});
+
+test('main.js: a month page left (or signed in) at its top reopens at its top; relayout keeps it there', () => {
+  const src = read('js/main.js');
+  // leavePage: the remembered ratio comes from scrollMemoryRatio (null for a grid page at its top),
+  // and a grid page at its top forgets an older position, so scrollToInitial opens it at the top.
+  const leave = mainFunction(src, 'leavePage');
+  assert.match(leave, /const ratio = scrollMemoryRatio\(prev\.spec\.fit, S\.els\.viewport\);/);
+  assert.match(leave, /if \(ratio !== null\) S\.scrollMemory\.set\(prev\.pageId, ratio\);\s*else if \(prev\.spec\.fit === 'grid'\) S\.scrollMemory\.delete\(prev\.pageId\);/);
+  assert.doesNotMatch(leave, /scrollRatio\(\)/);
+  // The Google sign-in round trip carries no scroll for it either (rememberReturnScroll then stores nothing).
+  const signIn = mainFunction(src, 'startSignIn');
+  assert.match(signIn, /pageScrolls\(S\.page\.spec\) \? scrollMemoryRatio\(S\.page\.spec\.fit, S\.els\.viewport\) : null/);
+  assert.doesNotMatch(signIn, /scrollRatio\(\)/);
+  // Without a memory, the month page (no initialScrollY, no hour grid) starts at y 0.
+  assert.match(mainFunction(src, 'scrollToInitial'), /if \(!smooth && S\.scrollMemory\.has\(p\.pageId\)\)[\s\S]*initialScrollY\(p\)/);
+  assert.match(mainFunction(src, 'initialScrollY'), /if \(!Number\.isFinite\(p\.spec\.hourH\)\) return 0;/);
+  // relayout decides through the tested scrollTopAfterRelayout (a month page at its top stays at the top).
+  const relayout = mainFunction(src, 'relayout');
+  assert.match(relayout, /scrollTopAfterRelayout\(\{[\s\S]*fit: p\.spec\.fit[\s\S]*\}\);\s*if \(y !== null\) vp\.scrollTop = y;/);
+  // Banners change the viewport's top inside keepContentStill, so relayout's prevTop is already the new top.
+  assert.match(mainFunction(src, 'updateBanner'), /keepContentStill\(\(\) => \{[\s\S]*showBanner\(elBanner, b\)/);
+});
+
+test('main.js: the year page caches only all-day events and refreshes every third periodic tick', () => {
+  const src = read('js/main.js');
+  const load = mainFunction(src, 'loadEvents');
+  // filtered right after the fetch, before the failed-calendar merge, putEvents and the offline copy
+  assert.match(load, /let list = \[\.\.\.eventsKeptForView\(p\.view, events\)\];[\s\S]*putEvents\(cacheId, list, key/);
+  assert.match(mainFunction(src, 'applyEventChange'), /list = eventsKeptForView\(p\.view, \[/);
+  const periodic = mainFunction(src, 'startPeriodicRefresh');
+  assert.match(periodic, /periodicRefreshDue\(\{ view: S\.page\.view, at, now: Date\.now\(\), intervalMs: EVENTS_REFRESH_MS \}\)/);
+  assert.match(periodic, /if \(!S\.dialogOpen && due\) loadEvents\(S\.page, \{ force: true \}\);/);
+});
+
+test('main.js: the two-finger tap listens passively and never blocks scrolling or the swipe', () => {
+  const src = read('js/main.js');
+  assert.match(mainFunction(src, 'installInteractions'), /installSwipe\(vp\);\s*installTwoFingerTap\(vp\);/);
+  const fn = mainFunction(src, 'installTwoFingerTap');
+  assert.match(fn, /const opts = \{ capture: true, passive: true \};/);
+  assert.doesNotMatch(fn, /passive: false|preventDefault|stopPropagation/);
+  for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+    assert.match(fn, new RegExp(`addEventListener\\('${type}'[\\s\\S]*?, opts\\);`), type);
+  }
+  const blocked = mainFunction(src, 'twoFingerTapBlocked');
+  for (const k of ['S.dialogOpen', 'S.welcomeOpen', 'S.leaving', "contactsDown('pen')"]) assert.ok(blocked.includes(k), k);
+  // Like a toolbar tap (selectTool), then a 1 s toast.
+  const toggle = mainFunction(src, 'toggleEraserByTap');
+  assert.match(toggle, /twoFingerTapTool\(st\.tool, st\.lastInkTool\)/);
+  assert.match(toggle, /selectTool\(next\.tool\)/);
+  assert.match(src, /const TOOL_TOAST_MS = 1000;/);
 });
 
 test('APP_FILES: every entry exists, and every app module / stylesheet is listed', () => {

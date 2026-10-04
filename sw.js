@@ -13,7 +13,7 @@
 //   「新しいバージョンがあります」 toast); activate claims clients and deletes old caches. An incomplete
 //   precache fails the install, so the old worker and its complete cache stay until a later retry.
 
-const VERSION = '1.0.4'; // keep in sync with APP_VERSION in js/config.js
+const VERSION = '1.0.5'; // keep in sync with APP_VERSION in js/config.js
 const CACHE_PREFIX = 'tegaki-v';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
@@ -43,6 +43,7 @@ const APP_FILES = [
   'js/views/day-view.js',
   'js/views/week-view.js',
   'js/views/month-view.js',
+  'js/views/year-view.js',
   'js/google/http.js',
   'js/google/auth.js',
   'js/google/calendar.js',
@@ -61,6 +62,7 @@ const APP_FILES = [
   'js/ui/settings.js',
   'js/ui/selection-menu.js',
   'js/ui/toast.js',
+  'js/ui/gestures.js',
 ];
 
 const TIMEOUT = Symbol('timeout');

@@ -21,8 +21,10 @@ export const SEEN_CALENDARS_KEY = 'tegaki.calendars.seen.v1';
 /** A stored date is restored only if the user looked at it this recently (else: today). */
 export const ROUTE_RESTORE_MS = 6 * 60 * 60 * 1000;
 
-export const VIEW_NAMES = Object.freeze(['day', 'week', 'month']);
+export const VIEW_NAMES = Object.freeze(['day', 'week', 'month', 'year']);
 export const TOOL_NAMES = Object.freeze(['pen', 'highlighter', 'eraser', 'lasso', 'event']);
+/** Tools that write ink (the two-finger tap goes back to the last of them from the eraser). */
+export const INK_TOOL_NAMES = Object.freeze(['pen', 'highlighter']);
 export const PEN_SIZE_NAMES = Object.freeze(['thin', 'medium', 'thick']);
 
 const MAX_CALENDAR_IDS = 500;
@@ -42,6 +44,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   penColor: '#1f2937',
   penSize: 'medium',
   hlColor: '#fde047',
+  lastInkTool: 'pen', // derived: the last of pen / highlighter selected (two-finger tap: eraser → back to it)
   view: 'week',
   date: '',
 });
@@ -101,6 +104,7 @@ const VALIDATORS = {
   penColor: (v) => (typeof v === 'string' && HEX_COLOR.test(v) ? v.toLowerCase() : undefined),
   penSize: (v) => (PEN_SIZE_NAMES.includes(v) ? v : undefined),
   hlColor: (v) => (typeof v === 'string' && HEX_COLOR.test(v) ? v.toLowerCase() : undefined),
+  lastInkTool: (v) => (INK_TOOL_NAMES.includes(v) ? v : undefined),
   view: (v) => (VIEW_NAMES.includes(v) ? v : undefined),
   date: (v) => (isValidYMD(v) ? v : undefined),
 };
@@ -147,6 +151,8 @@ export function sanitizeSettings(raw, fallback) {
     out[key] = value;
   }
   if (!isValidYMD(out.date)) out.date = toYMD(startOfDay(new Date()));
+  // Selecting the pen or the highlighter remembers it (also when the toolbar sets tool and color together).
+  if (INK_TOOL_NAMES.includes(out.tool)) out.lastInkTool = out.tool;
   return freezeSettings(out);
 }
 
@@ -328,7 +334,7 @@ export function createSettingsStore({ storage = null, now = Date.now } = {}) {
  * - date: returnState.date → settings.date if the route was in use within maxAgeMs → today.
  *   (Reopening the app the next morning shows today, while a reload / OAuth round trip stays put.)
  * @param {{ returnState?: any, settings?: object, lastRouteAt?: number|null, now?: Date|number|(() => number), maxAgeMs?: number }} o
- * @returns {{ view: 'day'|'week'|'month', date: Date }}  date = local midnight
+ * @returns {{ view: 'day'|'week'|'month'|'year', date: Date }}  date = local midnight
  */
 export function resolveInitialRoute({ returnState = null, settings = null, lastRouteAt = null, now, maxAgeMs = ROUTE_RESTORE_MS } = {}) {
   const today = startOfDay(toDate(now));
@@ -560,6 +566,35 @@ export function parseDraft(raw, { mode, now = Date.now(), maxAgeMs = DRAFT_MAX_A
 // ---------------------------------------------------------------------------------------------
 // Persisted events cache (offline cold start shows the last known events) (pure)
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * The events a page keeps in its cache and offline copy. The year page fetches a whole year but shows only
+ * all-day events: its timed ones (a daily meeting alone is 365 of them) are dropped before they are cached,
+ * stored and re-stored with every refresh. Other pages keep everything.
+ * @param {string} view
+ * @param {object[]} events CalEvent[]
+ */
+export function eventsKeptForView(view, events) {
+  const list = Array.isArray(events) ? events : [];
+  return view === 'year' ? list.filter((e) => isPlainObject(e) && !!e.allDay) : list;
+}
+
+/** The year page refetches its events on every YEAR_REFRESH_TICKS-th periodic refresh only. */
+export const YEAR_REFRESH_TICKS = 3;
+
+/**
+ * Should the periodic refresh (every intervalMs while the app is visible) refetch the page's events now?
+ * Always, except on the year page (a whole year of events): only when its events are about
+ * YEAR_REFRESH_TICKS intervals old (half an interval of slack: the timer and the fetch are not in step),
+ * never fetched / invalidated (at 0), or from the future (the clock was changed).
+ * @param {{ view: string, at?: number, now?: number, intervalMs: number }} o
+ */
+export function periodicRefreshDue({ view, at = 0, now = Date.now(), intervalMs } = {}) {
+  if (view !== 'year') return true;
+  const age = Number(now) - (Number(at) || 0);
+  if (!(Number(at) > 0) || !(age >= 0)) return true;
+  return age >= (YEAR_REFRESH_TICKS - 0.5) * Math.max(0, Number(intervalMs) || 0);
+}
 
 /** CalEvent list → structured-clone/JSON friendly entry (dates as ISO strings). */
 export function encodeEventsEntry({ events, key, at } = {}) {

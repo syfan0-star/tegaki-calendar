@@ -170,6 +170,7 @@ const {
   computeBackingSize, shouldAppendPoint, finalizeStrokePoints, samplePointsAlong, closeLassoPolygon, normalizeRect,
   isRect, pointInRect, clampMoveDelta, logicalRectToScreen, computeSnapshotLayout, retainGestureBlock,
   releaseGestureBlock, simplifyPolygon, MAX_CANVAS_PIXELS, UNDO_LIMIT, ERASER_RADIUS,
+  InkStabilizer, STABILIZER,
 } = S;
 // The real render module (for comparing the live preview with the committed outline), unless faked.
 const realRender = await import('../js/ink/render.js').catch(() => null);
@@ -235,6 +236,16 @@ test('computeBackingSize keeps every canvas within 16,777,216 px', () => {
   assert.deepEqual(computeBackingSize(NaN, -5, 0), { width: 1, height: 1, ratio: 1 });
 });
 
+test('canvases keep the full devicePixelRatio for every iPad page (the backing store is not why ink looked jagged)', () => {
+  // [W, H, CSS width of the page]: week portrait 11", day landscape 11", month (1.0.5: 1400×1750), year
+  for (const [W, H, cssW] of [[1400, 1920, 820], [1000, 2400, 1180], [1400, 1750, 1180], [1400, 1860, 1180], [1400, 1920, 1032]]) {
+    const scale = cssW / W;
+    assert.equal(computeBackingSize(W * scale, H * scale, 2).ratio, 2, `${W}×${H} at ${cssW} px`);
+  }
+  // Only a day page on a 13" iPad Pro in landscape is a little above the cap: still ≥ 1.9 device px per CSS px.
+  assert.ok(computeBackingSize(1376, 2400 * 1.376, 2).ratio > 1.9);
+});
+
 test('shouldAppendPoint drops micro-jitter', () => {
   assert.equal(shouldAppendPoint([], 1, 1), true);
   assert.equal(shouldAppendPoint([0, 0, 0.5], 0.2, 0.1), false);
@@ -252,6 +263,163 @@ test('finalizeStrokePoints rounds, clamps and merges consecutive duplicates', ()
   assert.ok(!Object.is(finalizeStrokePoints([-0.01, 0, 0.5])[0], -0));
   assert.deepEqual(finalizeStrokePoints([]), []);
   assert.deepEqual(finalizeStrokePoints(null), []);
+});
+
+// --- InkStabilizer (1.0.5: smooth Pencil ink) ---
+
+/** Pencil-like samples along a path f(u) (page CSS px) at `speed` px/s, 240 Hz, as stabilizer samples. */
+function penPath(f, { speed = 40, scale = 0.6, left = 120.37, top = 64.61, whole = true, length = 60 } = {}) {
+  const out = [];
+  const duration = length / speed;
+  for (let k = 0; k <= Math.ceil(duration * 240); k++) {
+    const u = Math.min(1, k / 240 / duration);
+    const [x, y] = f(u);
+    out.push({
+      cx: whole ? Math.floor(x + left) : x + left, cy: whole ? Math.floor(y + top) : y + top,
+      p: 0.5, t: 1000 + (k * 1000) / 240, left, top, scale, true: [x, y],
+    });
+  }
+  return out;
+}
+
+function runStabilizer(samples, opts) {
+  const st = new InkStabilizer(samples[0], opts);
+  for (let i = 1; i < samples.length; i++) st.add(samples[i]);
+  return st;
+}
+
+/**
+ * Half the spread (CSS px) of the points' distances from lines with direction (dx, dy): how far they wander
+ * from the best parallel line (whole-pixel coordinates are truncated, so the whole stroke may sit up to
+ * 1 px off the true line; that offset is the same for every point and does not count).
+ */
+function lineWobble(points, dx, dy) {
+  const l = Math.hypot(dx, dy);
+  const d = points.map(([x, y]) => (x * dy - y * dx) / l);
+  return (Math.max(...d) - Math.min(...d)) / 2;
+}
+
+test('InkStabilizer: whole-pixel input (iPadOS ≤ 26.1) is reconstructed, no 1-px staircase', () => {
+  // A slow, shallow straight line: the raw samples step by whole pixels. (It starts in the middle of a
+  // pixel: where in its pixel the first sample lies is unknowable, so the ends may be up to ½ px off.)
+  const samples = penPath((u) => [0.5 + u * 60, 0.5 + u * 60 * 0.21], { left: 120, top: 64 });
+  const rawDev = lineWobble(samples.map((q) => [q.cx - q.left, q.cy - q.top]), 1, 0.21);
+  const st = runStabilizer(samples);
+  const pts = st.finish();
+  const stored = [];
+  for (let i = 3; i < pts.length - 3; i += 3) stored.push([pts[i] * 0.6, pts[i + 1] * 0.6]); // between the real ends
+  const dev = lineWobble(stored, 1, 0.21);
+  assert.ok(rawDev > 0.4, `raw staircase ±${rawDev} px`);
+  assert.ok(dev < 0.15, `stored points stay on a straight line: ±${dev} px`);
+  // the stroke starts and ends inside the first / last sample's pixel; stored points are ≥ 0.75 CSS px apart
+  const inPixel = (x, y, q) => Math.abs(x * 0.6 - (q.cx - q.left)) <= 0.55 && Math.abs(y * 0.6 - (q.cy - q.top)) <= 0.55;
+  assert.ok(inPixel(pts[0], pts[1], samples[0]), `start ${pts.slice(0, 2)}`);
+  assert.ok(inPixel(pts.at(-3), pts.at(-2), samples.at(-1)), `end ${pts.slice(-3, -1)}`);
+  for (let i = 3; i + 3 < pts.length - 3; i += 3) {
+    assert.ok(Math.hypot(pts[i + 3] - pts[i], pts[i + 4] - pts[i + 1]) * 0.6 >= STABILIZER.minSpacing - 0.1);
+  }
+  assert.ok(pts.length / 3 < samples.length / 2, 'far fewer points than samples');
+});
+
+test('InkStabilizer: fractional input is used as is; a still pen with sub-pixel jitter stays a dot', () => {
+  const samples = penPath((u) => [u * 40, Math.sin(u * 3) * 6], { whole: false, speed: 150 });
+  const pts = runStabilizer(samples).finish();
+  for (let i = 0; i < pts.length; i += 3) {
+    // every stored point lies on the true curve (within the One Euro lag + rounding)
+    let best = Infinity;
+    for (const q of samples) best = Math.min(best, Math.hypot(q.true[0] - pts[i] * 0.6, q.true[1] - pts[i + 1] * 0.6));
+    assert.ok(best < 0.3, `point ${i / 3} is ${best} px off the curve`);
+  }
+  let seed = 4;
+  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const still = penPath(() => [10 + (r() - 0.5) * 0.4, 20 + (r() - 0.5) * 0.4], { whole: false, length: 20 });
+  const dot = runStabilizer(still).finish();
+  assert.equal(dot.length, 3, 'one point');
+  assert.deepEqual(dot.slice(0, 2), [Math.round(((still[0].cx - still[0].left) / 0.6) * 10) / 10, Math.round(((still[0].cy - still[0].top) / 0.6) * 10) / 10]);
+});
+
+test('InkStabilizer: preview() is exactly the stroke finish() commits; preview changes no state', () => {
+  for (const whole of [true, false]) {
+    const samples = penPath((u) => [30 * Math.cos(u * 5), 30 * Math.sin(u * 5)], { whole, speed: 90, length: 120 });
+    const st = runStabilizer(samples.slice(0, 200));
+    const early = st.preview();
+    assert.deepEqual(st.preview(), early, 'repeatable');
+    for (let i = 200; i < samples.length; i++) st.add(samples[i]);
+    const live = st.preview();
+    assert.deepEqual(st.finish(), live, whole ? 'whole px' : 'fractional');
+    // the real first / last point (fractional input: exactly; whole pixels: inside that pixel)
+    const tol = whole ? 0.55 / 0.6 : 0.05 + 1e-9;
+    for (const [i, q] of [[0, samples[0]], [live.length - 3, samples[samples.length - 1]]]) {
+      assert.ok(Math.abs(live[i] - (q.cx - q.left) / 0.6) <= tol && Math.abs(live[i + 1] - (q.cy - q.top) / 0.6) <= tol, `point ${i / 3}`);
+    }
+  }
+});
+
+test('InkStabilizer: preview() ends where finish() does when the pen rests in its last pixel (whole px)', () => {
+  // The end is placed with the axes "finished" in both: a pen that rests longer than 2× the last pixel
+  // crossing interval ends at its cell centre, not extrapolated along the last tangent (no twitch at lift).
+  const rest = (samples, ms) => {
+    const last = samples[samples.length - 1];
+    const out = samples.slice();
+    for (let k = 1; k <= Math.round((ms * 240) / 1000); k++) out.push({ ...last, t: last.t + (k * 1000) / 240 });
+    return out;
+  };
+  const cases = [
+    // a small 「、」 at 40 px/s ending with an 80 ms とめ
+    rest(penPath((u) => [u * 3, u * 3.2], { speed: 40, length: 4.4, left: 300.4, top: 200.3 }), 80),
+    // a slow, shallow line resting in its last pixel: one axis has a long trail
+    rest(penPath((u) => [0.3 + u * 50, 0.6 + u * 50 * 0.04], { speed: 30, length: 50, left: 79.2, top: 128.7 }), 120),
+    // the same line lifted without a rest, and a steeper one
+    penPath((u) => [0.3 + u * 50, 0.6 + u * 50 * 0.04], { speed: 30, length: 50, left: 79.2, top: 128.7 }),
+    rest(penPath((u) => [u * 20, u * 35], { speed: 70, length: 40 }), 60),
+  ];
+  // and random smooth strokes, some with a short rest at the end
+  let seed = 11;
+  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let k = 0; k < 60; k++) {
+    const a = r() * Math.PI * 2;
+    const bend = (r() - 0.5) * 3;
+    const len = 6 + r() * 60;
+    const path = penPath((u) => [len * u * Math.cos(a + bend * u) + 0.37, len * u * Math.sin(a + bend * u) + 0.81],
+      { speed: 20 + r() * 200, length: len, left: 100 + r(), top: 50 + r() });
+    cases.push(r() < 0.5 ? rest(path, 20 + r() * 100) : path);
+  }
+  for (const [i, samples] of cases.entries()) {
+    const st = runStabilizer(samples);
+    const live = st.preview();
+    assert.deepEqual(st.preview(), live, `case ${i}: a second preview is unchanged`);
+    assert.deepEqual(st.finish(), live, `case ${i}: committed = last live frame`);
+  }
+});
+
+test('InkStabilizer: timestamps may be missing; pressure is smoothed; setPressure fixes fallbacks', () => {
+  const st = new InkStabilizer({ cx: 10, cy: 10, p: 0.5, left: 0, top: 0, scale: 1 });
+  for (let i = 1; i <= 20; i++) st.add({ cx: 10 + i * 2, cy: 10, p: i < 10 ? 0.5 : 0.9, left: 0, top: 0, scale: 1 });
+  st.setPressure(0.3);
+  const pts = st.finish();
+  const xs = pts.filter((_, i) => i % 3 === 0);
+  const ps = pts.filter((_, i) => i % 3 === 2);
+  assert.ok(xs.every((x, i) => i === 0 || x > xs[i - 1]), 'monotonic along the stroke');
+  assert.deepEqual([xs[0], xs[xs.length - 1]], [10, 50]);
+  assert.ok(ps.every((p) => p === 0.3), 'every earlier pressure (and the smoothing state) replaced');
+  const st2 = new InkStabilizer({ cx: 0, cy: 0, p: 0.2, t: 0, left: 0, top: 0, scale: 1 });
+  const p2 = [];
+  for (let i = 1; i <= 12; i++) {
+    st2.add({ cx: i * 3 + 0.25, cy: 0.5, p: 0.8, t: i * 1000 / 240, left: 0, top: 0, scale: 1 });
+    p2.push(st2.pts[st2.pts.length - 1]);
+  }
+  assert.ok(p2[0] > 0.2 && p2[0] < 0.5, `a pressure step is eased in (${p2[0]})`);
+  assert.ok(p2[p2.length - 1] > 0.75, 'and reached within ~50 ms');
+});
+
+test('InkStabilizer: a page that scrolls during the stroke keeps the ink in place', () => {
+  const samples = penPath((u) => [u * 30, u * 10], { whole: false, speed: 60, length: 32 });
+  const a = runStabilizer(samples).finish();
+  // the same pen path while the page box moves up by 7.3 px half way through
+  const moved = samples.map((q, i) => (i < samples.length / 2 ? q : { ...q, cy: q.cy - 7.3, top: q.top - 7.3 }));
+  const b = runStabilizer(moved).finish();
+  assert.equal(a.length, b.length);
+  for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) <= 0.1 + 1e-9, `value ${i}`);
 });
 
 test('samplePointsAlong spaces samples at most `step` apart and ends at the target', () => {
@@ -650,7 +818,14 @@ test('pen stroke → one add op in logical units; undo / redo', () => {
   assert.equal(s.tool, 'pen');
   assert.equal(s.color, '#1f2937');
   assert.equal(s.size, 3.5);
-  assert.deepEqual(s.pts, [100, 100, 0.6, 110, 105, 0.7, 120, 110, 0.7]);
+  // The first and last points are the real pen positions; the point between is the stabilized sample
+  // (it may trail the pen a little along the line); pressures are lightly smoothed.
+  assert.equal(s.pts.length, 9);
+  assert.deepEqual(s.pts.slice(0, 3), [100, 100, 0.6]);
+  assert.deepEqual(s.pts.slice(6, 8), [120, 110]);
+  const [mx, my] = s.pts.slice(3, 5);
+  assert.ok(Math.abs(mx - 110) <= 2 && Math.abs((mx - 100) / 2 - (my - 100)) <= 0.1, `middle point ${mx},${my}`);
+  for (let i = 2; i < 9; i += 3) assert.ok(s.pts[i] >= 0.6 && s.pts[i] <= 0.7, `pressure ${s.pts[i]}`);
   assert.equal(surface.getDoc(), doc);
   assert.equal(strokeCount(env), 1);
   assert.equal(surface.canUndo(), true);
@@ -668,7 +843,7 @@ test('pen stroke → one add op in logical units; undo / redo', () => {
   surface.destroy();
 });
 
-test('a single tap makes a dot; jitter below 0.3 lu is ignored', () => {
+test('a single tap makes a dot; jitter below 0.75 CSS px is ignored', () => {
   const env = setup();
   pointer(env, 'pointerdown', 50, 50);
   pointer(env, 'pointermove', 50.1, 50.1);
@@ -685,7 +860,12 @@ test('coalesced samples are used; predicted samples are drawn but never stored',
   env.dom.flush();
   pointer(env, 'pointerup', 40, 10, { pressure: 0 });
   const pts = lastOp(env).strokes[0].pts;
-  assert.deepEqual(pts, [10, 10, 0.5, 20, 10, 0.4, 30, 10, 0.5, 40, 10, 0.6]);
+  const xs = pts.filter((_, i) => i % 3 === 0);
+  assert.equal(xs.length, 4, 'every coalesced sample is a point');
+  assert.deepEqual([xs[0], xs[3]], [10, 40]);
+  assert.ok(xs[1] > 15 && xs[1] <= 20 && xs[2] > 25 && xs[2] <= 30, xs.join());
+  assert.ok(pts.filter((_, i) => i % 3 === 1).every((y) => y === 10));
+  for (let i = 5; i < pts.length; i += 3) assert.ok(pts[i] >= 0.4 && pts[i] <= 0.6, `pressure ${pts[i]}`);
   env.surface.destroy();
 });
 
@@ -790,7 +970,8 @@ test('pen hover moves (other pointerId, buttons 0) are ignored', () => {
   pointer(env, 'pointermove', 30, 10, { id: 1, buttons: 0, pressure: 0 }); // hover id
   pointer(env, 'pointermove', 20, 10, { id: 2 });
   pointer(env, 'pointerup', 20, 10, { id: 2 });
-  assert.deepEqual(lastOp(env).strokes[0].pts.filter((_, i) => i % 3 === 0), [10, 20]);
+  const xs = lastOp(env).strokes[0].pts.filter((_, i) => i % 3 === 0);
+  assert.deepEqual([xs[0], xs[xs.length - 1], Math.max(...xs)], [10, 20, 20]);
   env.surface.destroy();
 });
 
@@ -1224,11 +1405,57 @@ test('live pen preview is drawn with the committed outline, so the ink does not 
   const livePath = lastFilledPath(live.ctx.calls);
   pointer(env, 'pointerup', 118, 124, { pressure: 0 });
   const stroke = lastOp(env).strokes[0];
-  assert.deepEqual(stroke.pts, [100, 100, 0.6, 110, 105, 1, 120, 100, 0.2, 130, 112, 0.7, 118, 124, 0.7]);
+  assert.equal(stroke.pts.length, 15);
+  assert.deepEqual(stroke.pts.slice(0, 3), [100, 100, 0.6]);
+  assert.deepEqual(stroke.pts.slice(12, 14), [118, 124]);
   const committed = realRender.strokeOutline(stroke);
   assert.ok(committed.length > 20);
   assert.equal(livePath.length, committed.length);
   for (let i = 0; i < committed.length; i++) assert.ok(Math.abs(livePath[i] - committed[i]) < 1e-9, `vertex ${i >> 1}`);
+  env.surface.destroy();
+});
+
+test('whole-pixel Pencil events (iPadOS ≤ 26.1, 240 Hz coalesced, 60 Hz frames): smooth ink, identical live and committed', (t) => {
+  if (usedFakes.has('render.js') || !realRender) return t.skip('needs the real render module');
+  const env = setup({ scale: 0.6, left: 120.4, top: 64.7 });
+  const live = canvasOf(env, 'ink-live');
+  // True pen path in client px: a slow arc. WebKit truncates every sample to whole px.
+  const at = (k) => {
+    const a = k / 240;
+    return { clientX: Math.floor(300 + 40 * Math.cos(a)), clientY: Math.floor(300 + 40 * Math.sin(a)), pressure: 0.5, timeStamp: 1000 + (k * 1000) / 240 };
+  };
+  const ev = (type, k, coalesced) => {
+    const e = evt({ pointerId: 3, pointerType: 'pen', button: 0, buttons: type === 'pointerup' ? 0 : 1, target: env.pageEl, ...at(k) });
+    if (coalesced) e.getCoalescedEvents = () => coalesced.map(at);
+    return env.pageEl.dispatch(type, e);
+  };
+  ev('pointerdown', 0);
+  let k = 0;
+  while (k < 240) { // one second, 4 coalesced samples per event, a frame after each event
+    ev('pointermove', k + 4, [k + 1, k + 2, k + 3, k + 4]);
+    k += 4;
+    env.dom.flush();
+  }
+  const livePath = lastFilledPath(live.ctx.calls);
+  ev('pointerup', k);
+  const stroke = lastOp(env).strokes[0];
+  const committed = realRender.strokeOutline(stroke);
+  assert.equal(livePath.length, committed.length, 'the ink does not change when the Pencil lifts');
+  for (let i = 0; i < committed.length; i++) assert.ok(Math.abs(livePath[i] - committed[i]) < 1e-9, `vertex ${i >> 1}`);
+  // No pixel steps left: the centreline turns smoothly everywhere.
+  const cl = realRender.strokeCenterline(stroke);
+  let maxTurn = 0;
+  for (let i = 3; i + 3 < cl.length; i += 3) {
+    const ax = cl[i] - cl[i - 3]; const ay = cl[i + 1] - cl[i - 2];
+    const bx = cl[i + 3] - cl[i]; const by = cl[i + 4] - cl[i + 1];
+    maxTurn = Math.max(maxTurn, Math.abs(Math.atan2(ax * by - ay * bx, ax * bx + ay * by)));
+  }
+  assert.ok((maxTurn * 180) / Math.PI < 8, `largest turn ${(maxTurn * 180) / Math.PI}°`);
+  // ... and it stays on the pen's arc (radius 40 px = 66.7 lu; whole px bias ≤ 1 px)
+  for (let i = 0; i < stroke.pts.length; i += 3) {
+    const r = Math.hypot(stroke.pts[i] * 0.6 + 120.4 - 300, stroke.pts[i + 1] * 0.6 + 64.7 - 300);
+    assert.ok(Math.abs(r - 40) < 1.2, `point ${i / 3}: radius ${r}`);
+  }
   env.surface.destroy();
 });
 
@@ -1255,7 +1482,8 @@ test('live ink: later frames clear only the previous stroke area; predicted samp
     assert.ok(Math.max(...xs) > 160, 'the predicted samples are part of the preview');
   }
   pointer(env, 'pointerup', 140, 100);
-  assert.deepEqual(lastOp(env).strokes[0].pts.filter((_, i) => i % 3 === 0), [100, 120, 140], 'predictions never stored');
+  const xs = lastOp(env).strokes[0].pts.filter((_, i) => i % 3 === 0);
+  assert.deepEqual([xs.length, xs[0], xs[2], Math.max(...xs)], [3, 100, 140, 140], 'predictions never stored');
   env.surface.destroy();
 });
 
@@ -1265,12 +1493,20 @@ test('a pen-down that reports pressure 0 takes the first real pressure instead o
   pointer(env, 'pointermove', 20, 10, { coalesced: [[20, 10, 0], [30, 10, 0.3]] });
   pointer(env, 'pointermove', 40, 10, { pressure: 0.6 });
   pointer(env, 'pointerup', 40, 10, { pressure: 0 });
-  assert.deepEqual(lastOp(env).strokes[0].pts, [10, 10, 0.3, 20, 10, 0.3, 30, 10, 0.3, 40, 10, 0.6]);
+  const pts = lastOp(env).strokes[0].pts;
+  const xs = pts.filter((_, i) => i % 3 === 0);
+  const ps = pts.filter((_, i) => i % 3 === 2);
+  assert.deepEqual([xs.length, xs[0], xs[3]], [4, 10, 40]);
+  assert.deepEqual(ps.slice(0, -1), [0.3, 0.3, 0.3], 'no 0.5 fallback left');
+  assert.ok(ps[ps.length - 1] > 0.3 && ps[ps.length - 1] < 0.6, 'moves (smoothly) towards the new pressure');
   // A real pen-down pressure is kept.
   pointer(env, 'pointerdown', 10, 50, { pressure: 0.8 });
   pointer(env, 'pointermove', 20, 50, { pressure: 0.3 });
   pointer(env, 'pointerup', 20, 50, { pressure: 0 });
-  assert.deepEqual(lastOp(env).strokes[0].pts, [10, 50, 0.8, 20, 50, 0.3]);
+  const second = lastOp(env).strokes[0].pts;
+  assert.deepEqual(second.slice(0, 3), [10, 50, 0.8]);
+  assert.deepEqual(second.slice(-3, -1), [20, 50]);
+  assert.ok(second[second.length - 1] < 0.8 && second[second.length - 1] >= 0.3);
   env.surface.destroy();
 });
 
@@ -1421,16 +1657,21 @@ test('allowFinger: a second finger turns the touch into a two-finger scroll inst
   // … the second finger lands: the stroke is dropped and both fingers scroll.
   pointer(env, 'pointerdown', 200, 100, { pointerType: 'touch', id: 2 });
   assert.equal(touchEvt('touchstart', [touch(120, 100), touch(200, 100)]).defaultPrevented, true);
-  const moved = touchEvt('touchmove', [touch(120, 60), touch(200, 60)]); // 40 lu = 20 px up
+  // A tap's wobble scrolls nothing; the scroll starts once the fingers moved 12 px, from there (no jump).
+  touchEvt('touchmove', [touch(124, 96), touch(204, 96)]); // 2 px
+  assert.equal(viewportEl.scrollTop, 300);
+  touchEvt('touchmove', [touch(120, 76), touch(200, 76)]); // 24 lu = 12 px
+  assert.equal(viewportEl.scrollTop, 300);
+  const moved = touchEvt('touchmove', [touch(120, 36), touch(200, 36)]); // 40 lu = 20 px up
   assert.equal(moved.defaultPrevented, true);
   assert.equal(viewportEl.scrollTop, 320);
-  touchEvt('touchmove', [touch(120, 0), touch(200, 0)]);
+  touchEvt('touchmove', [touch(120, -24), touch(200, -24)]);
   assert.equal(viewportEl.scrollTop, 350);
-  pointer(env, 'pointermove', 120, 0, { pointerType: 'touch', id: 1 });
-  // One finger lifts: the other keeps scrolling without a jump.
-  pointer(env, 'pointerup', 200, 0, { pointerType: 'touch', id: 2 });
-  touchEvt('touchend', [touch(120, 0)], [touch(200, 0)]);
-  touchEvt('touchmove', [touch(120, -40)]);
+  pointer(env, 'pointermove', 120, -24, { pointerType: 'touch', id: 1 });
+  // One finger lifts: the other keeps scrolling without a jump (and without a new slop).
+  pointer(env, 'pointerup', 200, -24, { pointerType: 'touch', id: 2 });
+  touchEvt('touchend', [touch(120, -24)], [touch(200, -24)]);
+  touchEvt('touchmove', [touch(120, -64)]);
   assert.equal(viewportEl.scrollTop, 370);
   // Scrolling stops at the end of the content and comes back at once.
   touchEvt('touchmove', [touch(120, -4000)]);
@@ -1467,6 +1708,66 @@ test('allowFinger: a second finger turns the touch into a two-finger scroll inst
   surface.setAllowFinger(false);
   assert.equal(touchEvt('touchstart', [touch(100, 100)]).defaultPrevented, false);
   assert.equal(touchEvt('touchstart', [touch(100, 100), touch(200, 100)]).defaultPrevented, false);
+  surface.destroy();
+});
+
+test('allowFinger: a two-finger tap (both fingers in one touchstart, a little wobble) leaves no ink and does not scroll', () => {
+  const env = setup();
+  const { pageEl, viewportEl, surface } = env;
+  viewportEl.scrollTop = 300;
+  viewportEl.scrollLeft = 0;
+  viewportEl.scrollHeight = 2000;
+  viewportEl.clientHeight = 800;
+  viewportEl.scrollWidth = 700;
+  viewportEl.clientWidth = 700;
+  surface.setAllowFinger(true);
+  const touch = (x, y) => ({ touchType: 'direct', target: pageEl, ...env.client(x, y) });
+  const touchEvt = (type, touches, changed) => pageEl.dispatch(type, evt({ touches, changedTouches: changed }));
+  const fingerDown = (id, x, y) => pointer(env, 'pointerdown', x, y, { pointerType: 'touch', id });
+  const fingerUp = (id, x, y) => pointer(env, 'pointerup', x, y, { pointerType: 'touch', id });
+
+  for (const tool of ['pen', 'eraser']) {
+    surface.setTool({ tool });
+    // pointerdown × 2, then ONE touchstart with both fingers (they landed together)
+    fingerDown(1, 100, 100);
+    fingerDown(2, 300, 100);
+    const both = [touch(100, 100), touch(300, 100)];
+    assert.equal(touchEvt('touchstart', both, both).defaultPrevented, true, `${tool}: claimed (no native scroll)`);
+    touchEvt('touchmove', [touch(101, 98), touch(301, 99)], [touch(101, 98), touch(301, 99)]);
+    touchEvt('touchmove', [touch(103, 104), touch(302, 103)], [touch(103, 104), touch(302, 103)]); // ≈ 2 px
+    pointer(env, 'pointermove', 103, 104, { pointerType: 'touch', id: 1 });
+    env.dom.flush();
+    assert.equal(viewportEl.scrollTop, 300, `${tool}: a wobble does not scroll`);
+    fingerUp(1, 103, 104);
+    fingerUp(2, 302, 103);
+    const up = [touch(103, 104), touch(302, 103)];
+    touchEvt('touchend', [], up);
+    env.dom.flush();
+    assert.equal(env.calls.commits.length, 0, `${tool}: no dot, nothing erased`);
+    assert.equal(viewportEl.scrollTop, 300);
+
+    // touchstart (both fingers) before the pointerdowns: the same
+    assert.equal(touchEvt('touchstart', both, both).defaultPrevented, true);
+    fingerDown(1, 100, 100);
+    fingerDown(2, 300, 100);
+    pointer(env, 'pointermove', 104, 102, { pointerType: 'touch', id: 1 });
+    fingerUp(1, 104, 102);
+    fingerUp(2, 300, 100);
+    touchEvt('touchend', [], both);
+    env.dom.flush();
+    assert.equal(env.calls.commits.length, 0, `${tool}: no ink either way round`);
+    assert.equal(viewportEl.scrollTop, 300);
+  }
+
+  // One finger alone still draws.
+  surface.setTool({ tool: 'pen' });
+  fingerDown(1, 100, 400);
+  touchEvt('touchstart', [touch(100, 400)], [touch(100, 400)]);
+  pointer(env, 'pointermove', 140, 400, { pointerType: 'touch', id: 1 });
+  fingerUp(1, 140, 400);
+  touchEvt('touchend', [], [touch(140, 400)]);
+  env.dom.flush();
+  assert.equal(env.calls.commits.length, 1);
   surface.destroy();
 });
 

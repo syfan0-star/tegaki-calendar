@@ -1,4 +1,4 @@
-/* views.css — the paper page: grid, event boxes, month cells, sticky header (module F1).
+/* views.css — the paper page: grid, event boxes, month cells, year cells, sticky header (module F1).
  *
  * The page lives in logical units; sizes that must follow the page use calc(var(--s) * Npx)
  * (--s = page scale, set on .page by applyPageScale). Font sizes that the JS also needs for fitting
@@ -24,6 +24,12 @@
   --weekend-tint: rgba(146, 118, 64, 0.045);
   --weekend-tint-soft: rgba(146, 118, 64, 0.03);
   --out-tint: rgba(107, 114, 128, 0.055);
+  /* Year page: Saturday / Sunday & holiday cells, and today (stronger: it shares the Saturday blue). */
+  --sat-tint: rgba(37, 99, 235, 0.055);
+  --sun-tint: rgba(220, 38, 38, 0.06);
+  --today-tint-strong: rgba(37, 99, 235, 0.15);
+  --hatch-bg: #f3f2ee;
+  --hatch-line: #dcd9d2;
 }
 
 /* ---------------------------------------------------------------- page (ink host, SPEC §7) */
@@ -41,8 +47,10 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Month: a sheet of paper centered in the viewport. Shadows do not affect layout. */
-.page[data-fit="contain"] {
+/* Month: a sheet of paper centered in the viewport (it scrolls down to its memo area; the toolbar strip
+   that keeps its grid clear of the toolbar is in styles/app.css). Shadows do not affect layout. */
+.page[data-fit="contain"],
+.page[data-fit="grid"] {
   box-shadow: 0 0 0 1px var(--line), 0 8px 28px rgba(31, 41, 55, 0.07);
 }
 
@@ -67,7 +75,8 @@
 /* ---------------------------------------------------------------- grid (SVG) */
 
 .grid .g-hour,
-.grid .g-vline {
+.grid .g-vline,
+.grid .g-hline {
   fill: none;
   stroke: var(--line);
   stroke-width: 1;
@@ -96,6 +105,34 @@
 .grid .g-today { fill: var(--today-tint); }
 .grid .g-weekend { fill: var(--weekend-tint); }
 .grid .g-out { fill: var(--out-tint); }
+
+/* Year page cells (one path per tint). The hatch pattern lives in the grid's <defs>. */
+.grid .g-sat { fill: var(--sat-tint); }
+.grid .g-sun { fill: var(--sun-tint); }
+.page[data-view="year"] .grid .g-today { fill: var(--today-tint-strong); }
+.grid .g-hatch-bg { fill: var(--hatch-bg); }
+.grid .g-hatch-line {
+  fill: none;
+  stroke: var(--hatch-line);
+  stroke-width: 2.5;
+}
+
+.grid .g-today-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.grid .g-daynum {
+  fill: var(--ink-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid .g-daynum.is-today {
+  fill: var(--accent);
+  font-weight: 700;
+}
 
 /* The day page is mostly one big column: keep its tints fainter so it still reads as paper. */
 .page[data-view="day"] .grid .g-today { fill: var(--today-tint-soft); }
@@ -408,6 +445,100 @@
   text-overflow: ellipsis;
 }
 
+/* ---------------------------------------------------------------- year cells */
+
+/* Weekday letter at a cell's top-left: tapping it opens that day. */
+.events .yc-wd {
+  position: absolute;
+  min-width: 1em;
+  color: var(--ink-2);
+  font-size: var(--yc-wd-fs, 9px);
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* A letter is only ~9px: an invisible extension makes it a usable finger target (the chips, later in
+   the DOM, still win where they overlap it). Kept modest so it hides little of the writing area. */
+.events .yc-wd::before {
+  content: '';
+  position: absolute;
+  inset: -6px -10px -8px -4px;
+}
+
+.events .yc-wd.is-red { color: var(--red); }
+.events .yc-wd.is-blue { color: var(--blue); }
+.events .yc-wd.is-today {
+  color: var(--accent);
+  font-weight: 800;
+}
+.events .yc-wd:active { background: rgba(31, 41, 55, 0.08); }
+.events .yc-wd:focus { outline: none; }
+.events .yc-wd:focus-visible { outline: 2px solid var(--accent); }
+
+/* Holiday name along the cell bottom (information only: not a tap target). */
+.events .yc-hol {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--red);
+  font-size: var(--yc-hol-fs, 7.5px);
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* All-day chips in the right part of the cell. */
+.events .yc-chip {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 0.3em;
+  border-radius: 3px;
+  background: var(--ev, #039be5);
+  color: var(--ev-fg, #fff);
+  font-size: calc(var(--yc-chip-fs, 8px) * var(--yc-k, 1));
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.events .yc-chip .yc-chip-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+/* Thinned lanes of a busy day (a tap opens that day): flatter corners so stacked chips stay distinct
+   (before cont-top/bottom, which square off the continuing side). */
+.events .yc-chip.is-thin { padding: 0 0.2em; border-radius: 1px; }
+.events .yc-chip.cont-top { border-top-left-radius: 0; border-top-right-radius: 0; }
+.events .yc-chip.cont-bottom { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
+/* A multi-day event continues on the next day's chip (same lane): its color links them across the gap.
+   --yc-link = gap / chip height, so the band ends exactly at the next chip. */
+.events .yc-chip.link-down::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: max(2px, calc(var(--s, 1) * 4px));
+  height: calc(var(--yc-link, 0) * 100%);
+  background: var(--ev, #039be5);
+  pointer-events: none;
+}
+
+.events .yc-chip:active { filter: brightness(0.94); }
+.events .yc-chip:focus { outline: none; }
+.events .yc-chip:focus-visible { outline: 2px solid var(--accent); }
+
 /* ---------------------------------------------------------------- sticky header (not inkable) */
 
 .sticky-header {
@@ -686,6 +817,28 @@
 .sh-wdcell.is-red { color: var(--red); }
 .sh-wdcell.is-blue { color: var(--blue); }
 
+/* Year: month names over the 12 columns (after the day-number gutter); a tap opens that month. */
+.sh-months {
+  display: grid;
+  grid-template-columns: var(--sh-gutter, 4%) repeat(12, minmax(0, 1fr));
+}
+
+.sh-months .sh-month {
+  overflow: hidden;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px 0;
+  color: var(--ink-1);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: inset 1px 0 0 var(--line-strong); /* lines up with the page's month separators */
+}
+
+.sh-months .sh-month.is-current { color: var(--accent); }
+.sh-months .sh-month:active { background: rgba(31, 41, 55, 0.06); }
+
 /* Split View / Slide Over (same breakpoint as the app header): week day columns are only ~45px wide,
    so the weekday goes above a smaller date number instead of beside it. */
 @media (max-width: 500px) {
@@ -701,4 +854,6 @@
     border-radius: 12px;
     font-size: 15px;
   }
+
+  .sh-months .sh-month { font-size: 11px; }
 }

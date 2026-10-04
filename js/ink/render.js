@@ -1,20 +1,36 @@
 /**
  * Ink rendering (module B).
  *
- * Pen strokes are filled outlines: the input points are smoothed with midpoint-quadratic curves
- * (sharp raw corners are kept as corners), the pressure-based width is smoothed and slope-limited
- * (no blobs), and the outline is one closed polygon with round caps at both ends, round outer joins
- * and inner joins through the centre point (the Skia stroker's approach; gentle bends use a single
- * bisector vertex per side), so sharp turns never produce spikes. Fill it with the non-zero rule:
- * self-overlaps are simply covered twice. Every polygon winds the same way, so several pen strokes
- * of one colour can share one fill.
+ * Pen strokes are filled outlines. The stored points go through five steps first:
+ *  1. Midpoint-quadratic curve through the points. A stored point stays a sharp corner only when
+ *     the turn is sharper than 75° AND both neighbouring segments are long (≥ max(3 lu, 1.5 ×
+ *     stroke width)): a V drawn with few samples keeps its tip, a 1-px step never does.
+ *  2. The curve is resampled every RESAMPLE_STEP (1 lu) of arc length.
+ *  3. Corners of densely sampled strokes are found at the same scale: the direction over one leg
+ *     length before and after a sample turns by more than 75°, and the turn is concentrated at the
+ *     sample (half the window shows most of the turn) instead of spread along a tight curve.
+ *  4. Between corners the samples are smoothed with a Gaussian (σ = SMOOTH_SIGMA, in lu — so about
+ *     0.7 CSS px on the month page, up to 1.6 on the day page) whose ends are pinned by point reflection,
+ *     so the stroke ends and the corners stay where they were. This removes digitizer jitter and the
+ *     kinks of the 1-CSS-px staircase of WebKit's whole-pixel Pencil coordinates (iPadOS ≤ 26.1, WebKit
+ *     bug 133180). New strokes (1.0.5) are already reconstructed from those coordinates when they are
+ *     written (InkStabilizer in surface.js), so they come out smooth. Strokes saved before 1.0.5 keep
+ *     their whole-pixel points: their kinks are gone, but on shallow lines (the staircase's period is
+ *     far longer than σ) a gentle wave of up to about 0.4 CSS px remains (the raw staircase: ±0.5 px).
+ *  5. The pressure-based width is smoothed over ≈ 6 lu of arc length and slope-limited (no blobs).
+ * The outline is one closed polygon with round caps at both ends, round outer joins and inner joins
+ * through the centre point (the Skia stroker's approach; gentle bends use a single bisector vertex
+ * per side), so sharp turns never produce spikes. Fill it with the non-zero rule: self-overlaps are
+ * simply covered twice. Every polygon winds the same way, so several pen strokes of one colour can
+ * share one fill.
  *
- * Highlighter strokes are a single constant-width path with round caps/joins, stroked once with
- * globalAlpha HIGHLIGHTER_ALPHA and 'multiply' compositing, so a stroke never darkens itself.
+ * Highlighter strokes follow the same smoothed path: a single constant-width polyline with round
+ * caps/joins, stroked once with globalAlpha HIGHLIGHTER_ALPHA and 'multiply' compositing, so a
+ * stroke never darkens itself.
  *
  * strokeOutline() is pure and runs in Node. Drawing only uses basic CanvasRenderingContext2D calls
- * (save/restore, beginPath, moveTo, lineTo, quadraticCurveTo, arc, fill, stroke), so it can be
- * tested with a recording fake context. Nothing touches the DOM at module load.
+ * (save/restore, beginPath, moveTo, lineTo, arc, fill, stroke), so it can be tested with a recording
+ * fake context. Nothing touches the DOM at module load.
  */
 
 export const PEN_COLORS = ['#1f2937', '#2563eb', '#dc2626', '#16a34a', '#ea580c', '#7c3aed'];
@@ -29,15 +45,23 @@ const MAX_SIZE = 1000;
 const COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 // Outline tuning (all in logical units).
-const MIN_STEP = 0.2; // raw points closer than this to the previous kept point are jitter
+const MIN_STEP = 0.2; // stored points closer than this to the previous kept point are jitter
 const MIN_STEP_SQ = MIN_STEP * MIN_STEP;
+const RESAMPLE_STEP = 1; // arc length between centreline samples before smoothing
+const SMOOTH_SIGMA = 1.2; // Gaussian σ of the centreline smoothing
+const SMOOTH_REACH = 2.5; // the kernel is cut off at ±2.5 σ
+const MAX_TAPS = 32; // kernel half-width limit (taps per side)
+const CORNER_MIN_LEG = 3; // a corner needs straight-ish legs at least this long on both sides …
+const CORNER_LEG_WIDTHS = 1.5; // … and at least 1.5 × the nominal stroke width
+const CORNER_DOT = Math.cos((75 * Math.PI) / 180); // turns sharper than 75° can be corners
+const CORNER_CONCENTRATION = 0.8; // half the window must show ≥ 80 % of the turn (not a tight curve)
 const MIN_RADIUS = 0.2; // never thinner than this
-const WIDTH_SMOOTHING = 2; // arc length (lu) of the pressure/width low-pass filter
+const WIDTH_SMOOTHING = 6; // arc length (lu) of the pressure/width low-pass filter
 const RADIUS_SLOPE = 0.35; // max |d radius / d length| — removes pressure blobs and pinches
 const FLATNESS = 0.04; // max chord error when flattening curves and arcs
+const SIMPLIFY_TOL = 0.02; // a sample this close to the chord of its neighbours (and radius) is dropped
 const MAX_SUBDIV = 16; // max sub-segments per smoothed curve piece
 const DEDUPE_SQ = 1e-8; // centreline points closer than 1e-4 lu are merged
-const CORNER_DOT = Math.cos((75 * Math.PI) / 180); // raw turns sharper than 75° stay corners
 const GENTLE_DOT = Math.cos((30 * Math.PI) / 180); // smaller turns: one bisector vertex per side (≤ 3.5 % thinner)
 const TAU = Math.PI * 2;
 const MAX_BATCH_VERTICES = 20000; // drawStrokes: max outline vertices per batched fill
@@ -48,10 +72,12 @@ const MAX_BATCH_VERTICES = 20000; // drawStrokes: max outline vertices per batch
 // ---------------------------------------------------------------------------------------------
 
 class PointBuf {
-  constructor(capacity, withRadius) {
+  constructor(capacity, withRadius, withFlags = false) {
     this.x = new Float64Array(capacity);
     this.y = new Float64Array(capacity);
     this.r = withRadius ? new Float64Array(capacity) : null;
+    this.f = withFlags ? new Uint8Array(capacity) : null; // flag (corner / end)
+    this.s = withFlags ? new Int32Array(capacity) : null; // source: index of the stored point it came from
     this.n = 0;
   }
 
@@ -67,6 +93,14 @@ class PointBuf {
       const nr = new Float64Array(cap);
       nr.set(this.r);
       this.r = nr;
+    }
+    if (this.f) {
+      const nf = new Uint8Array(cap);
+      nf.set(this.f);
+      this.f = nf;
+      const ns = new Int32Array(cap);
+      ns.set(this.s);
+      this.s = ns;
     }
   }
 
@@ -84,15 +118,33 @@ class PointBuf {
     this.r[this.n] = r;
     this.n++;
   }
+
+  push4(x, y, r, f, src) {
+    if (this.n === this.x.length) this.grow();
+    this.x[this.n] = x;
+    this.y[this.n] = y;
+    this.r[this.n] = r;
+    this.f[this.n] = f;
+    this.s[this.n] = src;
+    this.n++;
+  }
 }
 
 const RAW = new PointBuf(256, true); // filtered input points + radius
-const LINE = new PointBuf(512, true); // smoothed centreline + radius
+const CURVE = new PointBuf(512, true, true); // midpoint-quadratic curve (flattened) + radius; f = corner
+const SAMP = new PointBuf(512, true, true); // curve resampled every ~1 lu, then smoothed; f = corner / end
+const TMP = new PointBuf(512, false); // smoothing output
+const LINE = new PointBuf(512, true); // final centreline + radius
 const DIR = new PointBuf(512, true); // per centreline segment: unit direction (x, y) + length (r)
 const SIDE_A = new PointBuf(512, false); // offset side +normal, forward order
 const SIDE_B = new PointBuf(512, false); // offset side −normal, forward order
 const OUT = new PointBuf(1024, false); // final polygon
+const WEIGHTS = new Float64Array(MAX_TAPS + 1);
 let rawMaxRadius = 0;
+let rawMinX = 0;
+let rawMinY = 0;
+let rawMaxX = 0;
+let rawMaxY = 0;
 
 // ---------------------------------------------------------------------------------------------
 // Width / style helpers
@@ -125,14 +177,20 @@ export function widthAt(stroke, pressure) {
   return size * (0.4 + 0.9 * clampPressure(pressure));
 }
 
+/** Minimum leg length (lu) on both sides of a corner: max(3 lu, 1.5 × the width at pressure 0.5). */
+function cornerLeg(stroke) {
+  return Math.max(CORNER_MIN_LEG, CORNER_LEG_WIDTHS * widthAt(stroke, 0.5));
+}
+
 // ---------------------------------------------------------------------------------------------
-// Geometry pipeline: raw points → smoothed centreline (with radii) → outline polygon
+// Geometry pipeline: raw points → curve → resampled, smoothed centreline (with radii) → outline
 // ---------------------------------------------------------------------------------------------
 
 /**
  * Reads the valid points of stroke.pts into RAW (x, y, radius), skipping jitter closer than
  * MIN_STEP. `constRadius` > 0 forces a constant radius (highlighter).
- * Sets rawMaxRadius (max over all valid points, including skipped ones). Returns RAW.n.
+ * Sets rawMaxRadius (max over all valid points, including skipped ones) and the points' bounds.
+ * Returns RAW.n.
  */
 function readRaw(stroke, constRadius) {
   RAW.n = 0;
@@ -153,6 +211,15 @@ function readRaw(stroke, constRadius) {
       const dx = x - lx;
       const dy = y - ly;
       if (dx * dx + dy * dy < MIN_STEP_SQ) continue;
+      if (x < rawMinX) rawMinX = x;
+      else if (x > rawMaxX) rawMaxX = x;
+      if (y < rawMinY) rawMinY = y;
+      else if (y > rawMaxY) rawMaxY = y;
+    } else {
+      rawMinX = x;
+      rawMaxX = x;
+      rawMinY = y;
+      rawMaxY = y;
     }
     RAW.push3(x, y, r);
     lx = x;
@@ -162,16 +229,309 @@ function readRaw(stroke, constRadius) {
 }
 
 /**
- * Smooths the raw radii along the arc length (forward + backward exponential filter, averaged:
- * no lag, independent of the input sample rate). Takes the edge off pressure spikes (blobs).
- * Uses LINE.r as temporary storage for the forward pass.
+ * True when the stored polyline keeps a sharp corner at point i: it turns by more than 75° and
+ * both neighbouring segments are at least `leg` long (sparse samples of a real corner; the short
+ * steps of a pixel staircase or of jitter never qualify).
  */
-function smoothRawRadii(n) {
+function isRawCorner(i, leg) {
+  const X = RAW.x;
+  const Y = RAW.y;
+  const ax = X[i] - X[i - 1];
+  const ay = Y[i] - Y[i - 1];
+  const bx = X[i + 1] - X[i];
+  const by = Y[i + 1] - Y[i];
+  const la = ax * ax + ay * ay;
+  const lb = bx * bx + by * by;
+  const leg2 = leg * leg;
+  if (la < leg2 || lb < leg2) return false;
+  return ax * bx + ay * by < CORNER_DOT * Math.sqrt(la * lb);
+}
+
+function emitCurve(x, y, r, corner, src) {
+  const n = CURVE.n;
+  if (n > 0) {
+    const dx = x - CURVE.x[n - 1];
+    const dy = y - CURVE.y[n - 1];
+    if (dx * dx + dy * dy < DEDUPE_SQ) {
+      if (corner) CURVE.f[n - 1] = 1;
+      return;
+    }
+  }
+  CURVE.push4(x, y, r, corner ? 1 : 0, src);
+}
+
+/** Number of chords for a quadratic whose second difference has length dd (error ≤ FLATNESS). */
+function subdivisions(dd) {
+  if (dd <= 4 * FLATNESS) return 1;
+  const k = Math.ceil(Math.sqrt(dd / (4 * FLATNESS)));
+  return k > MAX_SUBDIV ? MAX_SUBDIV : k;
+}
+
+/**
+ * Midpoint-quadratic curve: p0 → m0 (line), m(i-1) → m(i) with control p(i), m(n-2) → p(n-1).
+ * Radii follow the same Bézier weights. Corners are kept: m(i-1) → p(i) → m(i), with p(i) flagged.
+ * Both ends are flagged too. Fills CURVE; returns CURVE.n.
+ */
+function buildCurve(n, leg) {
+  CURVE.n = 0;
   const X = RAW.x;
   const Y = RAW.y;
   const R = RAW.r;
-  while (LINE.r.length < n) LINE.grow();
-  const fwd = LINE.r;
+  emitCurve(X[0], Y[0], R[0], true, 0);
+  if (n === 2) {
+    emitCurve(X[1], Y[1], R[1], true, 1);
+    return CURVE.n;
+  }
+  let mx = (X[0] + X[1]) / 2;
+  let my = (Y[0] + Y[1]) / 2;
+  let mr = (R[0] + R[1]) / 2;
+  emitCurve(mx, my, mr, false, 0);
+  for (let i = 1; i <= n - 2; i++) {
+    const px = X[i];
+    const py = Y[i];
+    const pr = R[i];
+    const nx = (X[i] + X[i + 1]) / 2;
+    const ny = (Y[i] + Y[i + 1]) / 2;
+    const nr = (R[i] + R[i + 1]) / 2;
+    if (isRawCorner(i, leg)) {
+      emitCurve(px, py, pr, true, i);
+      emitCurve(nx, ny, nr, false, i);
+    } else {
+      const ddx = mx - 2 * px + nx;
+      const ddy = my - 2 * py + ny;
+      const k = subdivisions(Math.sqrt(ddx * ddx + ddy * ddy));
+      for (let j = 1; j <= k; j++) {
+        const t = j / k;
+        const u = 1 - t;
+        const a = u * u;
+        const b = 2 * u * t;
+        const c = t * t;
+        emitCurve(a * mx + b * px + c * nx, a * my + b * py + c * ny, a * mr + b * pr + c * nr, false, i);
+      }
+    }
+    mx = nx;
+    my = ny;
+    mr = nr;
+  }
+  emitCurve(X[n - 1], Y[n - 1], R[n - 1], true, n - 1);
+  CURVE.f[CURVE.n - 1] = 1;
+  return CURVE.n;
+}
+
+/**
+ * Resamples the curve between consecutive flagged points (ends / corners) at a uniform spacing of
+ * at most RESAMPLE_STEP, flagged points included exactly. Fills SAMP; returns SAMP.n.
+ */
+function resampleCurve() {
+  SAMP.n = 0;
+  const cx = CURVE.x;
+  const cy = CURVE.y;
+  const cr = CURVE.r;
+  const cf = CURVE.f;
+  const m = CURVE.n;
+  SAMP.push4(cx[0], cy[0], cr[0], 1, CURVE.s[0]);
+  let a = 0;
+  while (a < m - 1) {
+    let b = a + 1;
+    while (b < m - 1 && !cf[b]) b++;
+    let length = 0;
+    for (let j = a; j < b; j++) length += Math.hypot(cx[j + 1] - cx[j], cy[j + 1] - cy[j]);
+    const steps = Math.max(1, Math.ceil(length / RESAMPLE_STEP - 1e-9));
+    const h = length / steps;
+    // Walk the polyline a..b and drop a sample every h.
+    let seg = a;
+    let segStart = 0; // arc length at curve point `seg`
+    let segLen = Math.hypot(cx[seg + 1] - cx[seg], cy[seg + 1] - cy[seg]);
+    for (let s = 1; s < steps; s++) {
+      const target = s * h;
+      while (segStart + segLen < target && seg < b - 1) {
+        segStart += segLen;
+        seg++;
+        segLen = Math.hypot(cx[seg + 1] - cx[seg], cy[seg + 1] - cy[seg]);
+      }
+      let t = segLen > 0 ? (target - segStart) / segLen : 0;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      SAMP.push4(
+        cx[seg] + t * (cx[seg + 1] - cx[seg]),
+        cy[seg] + t * (cy[seg + 1] - cy[seg]),
+        cr[seg] + t * (cr[seg + 1] - cr[seg]),
+        0,
+        CURVE.s[t < 0.5 ? seg : seg + 1],
+      );
+    }
+    SAMP.push4(cx[b], cy[b], cr[b], 1, CURVE.s[b]);
+    a = b;
+  }
+  return SAMP.n;
+}
+
+/** Turn between (q[i] − q[i−k]) and (q[i+k] − q[i]) as cos (−1..1); 1 when degenerate. */
+function turnCos(i, k) {
+  const X = SAMP.x;
+  const Y = SAMP.y;
+  const ax = X[i] - X[i - k];
+  const ay = Y[i] - Y[i - k];
+  const bx = X[i + k] - X[i];
+  const by = Y[i + k] - Y[i];
+  const l = Math.sqrt((ax * ax + ay * ay) * (bx * bx + by * by));
+  return l > 0 ? (ax * bx + ay * by) / l : 1;
+}
+
+/**
+ * Corners of densely sampled strokes, between samples a and b (flagged ends, uniform spacing h):
+ * the turn over `leg` before/after a sample exceeds 75° and is concentrated at the sample (the
+ * half-length window turns by ≥ CORNER_CONCENTRATION of it). One corner (the sharpest) per run.
+ */
+function markCorners(a, b, h, leg) {
+  const k = Math.ceil(leg / h - 1e-9);
+  if (b - a < 2 * k) return;
+  const k2 = Math.max(1, Math.round(k / 2));
+  const F = SAMP.f;
+  let best = -1;
+  let bestCos = 2;
+  for (let i = a + k; i <= b - k + 1; i++) {
+    const c = i <= b - k ? turnCos(i, k) : 2; // the extra step closes the last run
+    if (c < CORNER_DOT) {
+      const angle = Math.acos(c);
+      const half = Math.acos(Math.max(-1, Math.min(1, turnCos(i, k2))));
+      if (half >= CORNER_CONCENTRATION * angle && c < bestCos) {
+        best = i;
+        bestCos = c;
+      }
+      continue;
+    }
+    if (best >= 0) pinCorner(best);
+    best = -1;
+    bestCos = 2;
+  }
+}
+
+/**
+ * Makes sample i a corner. The curve has rounded the stored corner point slightly (midpoint
+ * quadratics): the corner goes back onto that stored point when it is within one resample step.
+ */
+function pinCorner(i) {
+  SAMP.f[i] = 1;
+  const src = SAMP.s[i];
+  const dx = RAW.x[src] - SAMP.x[i];
+  const dy = RAW.y[src] - SAMP.y[i];
+  if (dx * dx + dy * dy <= RESAMPLE_STEP * RESAMPLE_STEP) {
+    SAMP.x[i] = RAW.x[src];
+    SAMP.y[i] = RAW.y[src];
+  }
+}
+
+/** Normalised Gaussian half-kernel for spacing h into WEIGHTS; returns the number of taps per side. */
+function gaussianWeights(h, maxTaps) {
+  let taps = Math.ceil((SMOOTH_REACH * SMOOTH_SIGMA) / h);
+  if (taps > maxTaps) taps = maxTaps;
+  if (taps > MAX_TAPS) taps = MAX_TAPS;
+  const inv = (h * h) / (2 * SMOOTH_SIGMA * SMOOTH_SIGMA);
+  let total = 1;
+  WEIGHTS[0] = 1;
+  for (let t = 1; t <= taps; t++) {
+    WEIGHTS[t] = Math.exp(-t * t * inv);
+    total += 2 * WEIGHTS[t];
+  }
+  for (let t = 0; t <= taps; t++) WEIGHTS[t] /= total;
+  return taps;
+}
+
+/**
+ * Gaussian smoothing of SAMP[a..b] (positions only; uniform spacing h). Samples outside the run are
+ * point reflections of the run through its end points, so both ends stay exactly in place, a
+ * straight run stays straight, and the smoothing stays at full strength up to the ends.
+ * The result is clamped to the stored points' bounds (strokeBBox always contains the outline).
+ */
+function smoothRun(a, b, h) {
+  if (b - a < 2) return;
+  const taps = gaussianWeights(h, b - a);
+  if (taps < 1) return;
+  const X = SAMP.x;
+  const Y = SAMP.y;
+  TMP.n = 0;
+  while (TMP.x.length < b - a + 1) TMP.grow();
+  const xa = X[a];
+  const ya = Y[a];
+  const xb = X[b];
+  const yb = Y[b];
+  for (let j = a + 1; j < b; j++) {
+    let sx = WEIGHTS[0] * X[j];
+    let sy = WEIGHTS[0] * Y[j];
+    for (let t = 1; t <= taps; t++) {
+      const w = WEIGHTS[t];
+      let i = j - t;
+      if (i >= a) {
+        sx += w * X[i];
+        sy += w * Y[i];
+      } else {
+        i = 2 * a - i;
+        sx += w * (2 * xa - X[i]);
+        sy += w * (2 * ya - Y[i]);
+      }
+      i = j + t;
+      if (i <= b) {
+        sx += w * X[i];
+        sy += w * Y[i];
+      } else {
+        i = 2 * b - i;
+        sx += w * (2 * xb - X[i]);
+        sy += w * (2 * yb - Y[i]);
+      }
+    }
+    TMP.x[j - a] = sx < rawMinX ? rawMinX : sx > rawMaxX ? rawMaxX : sx;
+    TMP.y[j - a] = sy < rawMinY ? rawMinY : sy > rawMaxY ? rawMaxY : sy;
+  }
+  for (let j = a + 1; j < b; j++) {
+    X[j] = TMP.x[j - a];
+    Y[j] = TMP.y[j - a];
+  }
+}
+
+/**
+ * Finds the corners of every run between flagged samples, then smooths each run between corners.
+ */
+function smoothSamples(leg) {
+  const X = SAMP.x;
+  const Y = SAMP.y;
+  const F = SAMP.f;
+  const n = SAMP.n;
+  // Pass 1: corners of dense input, run by run (a run has uniform spacing).
+  let a = 0;
+  while (a < n - 1) {
+    let b = a + 1;
+    while (b < n - 1 && !F[b]) b++;
+    const h = Math.hypot(X[a + 1] - X[a], Y[a + 1] - Y[a]);
+    if (b - a >= 2 && h > 0) markCorners(a, b, h, leg);
+    a = b;
+  }
+  // Pass 2: smooth between flagged samples.
+  a = 0;
+  while (a < n - 1) {
+    let b = a + 1;
+    while (b < n - 1 && !F[b]) b++;
+    if (b - a >= 2) {
+      // Spacing before smoothing: the run's chord length per step along its polyline.
+      let length = 0;
+      for (let j = a; j < b; j++) length += Math.hypot(X[j + 1] - X[j], Y[j + 1] - Y[j]);
+      smoothRun(a, b, length / (b - a));
+    }
+    a = b;
+  }
+}
+
+/**
+ * Smooths the radii along the arc length (forward + backward exponential filter, averaged:
+ * no lag, independent of the sample spacing). Takes the edge off pressure spikes (blobs).
+ * Uses TMP.x as temporary storage for the forward pass.
+ */
+function smoothRadii(n) {
+  const X = SAMP.x;
+  const Y = SAMP.y;
+  const R = SAMP.r;
+  while (TMP.x.length < n) TMP.grow();
+  const fwd = TMP.x;
   fwd[0] = R[0];
   for (let i = 1; i < n; i++) {
     const a = smoothingAlpha(X[i] - X[i - 1], Y[i] - Y[i - 1]);
@@ -191,19 +551,7 @@ function smoothingAlpha(dx, dy) {
   return 1 - Math.exp(-Math.sqrt(dx * dx + dy * dy) / WIDTH_SMOOTHING);
 }
 
-/** True when the raw polyline turns by more than 75° at point i (kept sharp, not smoothed). */
-function isCorner(i) {
-  const X = RAW.x;
-  const Y = RAW.y;
-  const ax = X[i] - X[i - 1];
-  const ay = Y[i] - Y[i - 1];
-  const bx = X[i + 1] - X[i];
-  const by = Y[i + 1] - Y[i];
-  const dot = ax * bx + ay * by;
-  return dot < CORNER_DOT * Math.sqrt((ax * ax + ay * ay) * (bx * bx + by * by));
-}
-
-function emit(x, y, r) {
+function emitLine(x, y, r) {
   const n = LINE.n;
   if (n > 0) {
     const dx = x - LINE.x[n - 1];
@@ -213,60 +561,39 @@ function emit(x, y, r) {
   LINE.push3(x, y, r < MIN_RADIUS ? MIN_RADIUS : r);
 }
 
-/** Number of chords for a quadratic whose second difference has length dd (error ≤ FLATNESS). */
-function subdivisions(dd) {
-  if (dd <= 4 * FLATNESS) return 1;
-  const k = Math.ceil(Math.sqrt(dd / (4 * FLATNESS)));
-  return k > MAX_SUBDIV ? MAX_SUBDIV : k;
-}
-
 /**
- * Midpoint-quadratic smoothing: p0 → m0 (line), m(i-1) → m(i) with control p(i), m(n-2) → p(n-1).
- * Radii follow the same Bézier weights. Corners are kept: m(i-1) → p(i) → m(i).
- * Fills LINE; returns LINE.n.
+ * Copies SAMP into LINE, dropping samples that lie on the chord from the last kept sample to the
+ * next one (and whose radius is on its linear interpolation): straight parts need no vertices.
+ * Corners and ends are always kept. Returns LINE.n.
  */
-function buildCenterline(n) {
+function simplifyInto(n) {
   LINE.n = 0;
-  const X = RAW.x;
-  const Y = RAW.y;
-  const R = RAW.r;
-  emit(X[0], Y[0], R[0]);
-  if (n === 2) {
-    emit(X[1], Y[1], R[1]);
-    return LINE.n;
-  }
-  let mx = (X[0] + X[1]) / 2;
-  let my = (Y[0] + Y[1]) / 2;
-  let mr = (R[0] + R[1]) / 2;
-  emit(mx, my, mr);
-  for (let i = 1; i <= n - 2; i++) {
-    const px = X[i];
-    const py = Y[i];
-    const pr = R[i];
-    const nx = (X[i] + X[i + 1]) / 2;
-    const ny = (Y[i] + Y[i + 1]) / 2;
-    const nr = (R[i] + R[i + 1]) / 2;
-    if (isCorner(i)) {
-      emit(px, py, pr);
-      emit(nx, ny, nr);
-    } else {
-      const ddx = mx - 2 * px + nx;
-      const ddy = my - 2 * py + ny;
-      const k = subdivisions(Math.sqrt(ddx * ddx + ddy * ddy));
-      for (let j = 1; j <= k; j++) {
-        const t = j / k;
-        const u = 1 - t;
-        const a = u * u;
-        const b = 2 * u * t;
-        const c = t * t;
-        emit(a * mx + b * px + c * nx, a * my + b * py + c * ny, a * mr + b * pr + c * nr);
+  const X = SAMP.x;
+  const Y = SAMP.y;
+  const R = SAMP.r;
+  const F = SAMP.f;
+  emitLine(X[0], Y[0], R[0]);
+  for (let i = 1; i < n - 1; i++) {
+    if (!F[i]) {
+      const k = LINE.n - 1;
+      const ax = LINE.x[k];
+      const ay = LINE.y[k];
+      const ar = LINE.r[k];
+      const vx = X[i + 1] - ax;
+      const vy = Y[i + 1] - ay;
+      const len2 = vx * vx + vy * vy;
+      if (len2 > 0) {
+        const wx = X[i] - ax;
+        const wy = Y[i] - ay;
+        const t = (wx * vx + wy * vy) / len2;
+        const cross = wx * vy - wy * vx;
+        if (t > 0 && t < 1 && cross * cross <= SIMPLIFY_TOL * SIMPLIFY_TOL * len2
+          && Math.abs(R[i] - (ar + t * (R[i + 1] - ar))) <= SIMPLIFY_TOL) continue;
       }
     }
-    mx = nx;
-    my = ny;
-    mr = nr;
+    emitLine(X[i], Y[i], R[i]);
   }
-  emit(X[n - 1], Y[n - 1], R[n - 1]);
+  emitLine(X[n - 1], Y[n - 1], R[n - 1]);
   return LINE.n;
 }
 
@@ -423,8 +750,14 @@ function computeCenterline(stroke) {
   const n = readRaw(stroke, constRadius);
   if (n === 0) return 0;
   if (n > 1) {
-    if (!isHighlighter) smoothRawRadii(n);
-    if (buildCenterline(n) >= 2) return LINE.n;
+    const leg = cornerLeg(stroke);
+    buildCurve(n, leg);
+    if (CURVE.n >= 2) {
+      const k = resampleCurve();
+      smoothSamples(leg);
+      if (!isHighlighter) smoothRadii(k);
+      if (simplifyInto(k) >= 2) return LINE.n;
+    }
   }
   // A single point (or everything within jitter distance): a dot at full pressure.
   LINE.n = 0;
@@ -444,6 +777,15 @@ function computeOutline(stroke) {
   return buildOutline(m);
 }
 
+function copyOut(k) {
+  const out = new Array(k * 2);
+  for (let i = 0; i < k; i++) {
+    out[i * 2] = OUT.x[i];
+    out[i * 2 + 1] = OUT.y[i];
+  }
+  return out;
+}
+
 /**
  * Closed outline polygon of a stroke as a flat [x0, y0, x1, y1, ...] array (fill with the
  * non-zero rule). Pens get the variable-width smoothed outline; highlighters the constant-width
@@ -451,13 +793,7 @@ function computeOutline(stroke) {
  * @returns {number[]}
  */
 export function strokeOutline(stroke) {
-  const k = computeOutline(stroke);
-  const out = new Array(k * 2);
-  for (let i = 0; i < k; i++) {
-    out[i * 2] = OUT.x[i];
-    out[i * 2 + 1] = OUT.y[i];
-  }
-  return out;
+  return copyOut(computeOutline(stroke));
 }
 
 /**
@@ -477,28 +813,75 @@ export function strokeCenterline(stroke) {
   return out;
 }
 
+/**
+ * Extra export (used by tests): the outline polygon of a given centreline flat [x, y, radius, ...]
+ * built exactly like strokeOutline builds it (same radius slope limit, joins and caps), so two
+ * smoothing methods can be compared on equal terms. 1 point → circle; nothing valid → [].
+ * @returns {number[]}
+ */
+export function outlineOfCenterline(centerline) {
+  LINE.n = 0;
+  if (centerline && typeof centerline.length === 'number') {
+    for (let i = 0; i + 2 < centerline.length; i += 3) {
+      const x = centerline[i];
+      const y = centerline[i + 1];
+      const r = centerline[i + 2];
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(r) && r > 0) emitLine(x, y, r);
+    }
+  }
+  const m = LINE.n;
+  if (m === 0) return [];
+  if (m === 1) return copyOut(buildDot(LINE.x[0], LINE.y[0], LINE.r[0]));
+  prepareSegments(m);
+  return copyOut(buildOutline(m));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Outline cache: strokes are immutable, so a finished stroke's polygon is computed once.
 // ---------------------------------------------------------------------------------------------
 
 const outlineCache = new WeakMap();
 
-/** Float32Array [x, y, ...] for a committed stroke (cached by object identity). */
-function cachedOutline(stroke) {
+/** Cache entry of a committed stroke if it is still valid (same points array, length, size, tool). */
+function cacheHit(stroke) {
   const pts = stroke.pts;
   const len = pts && typeof pts.length === 'number' ? pts.length : 0;
   const hit = outlineCache.get(stroke);
-  if (hit && hit.pts === pts && hit.len === len && hit.size === stroke.size && hit.tool === stroke.tool) {
-    return hit.poly;
-  }
+  if (hit && hit.pts === pts && hit.len === len && hit.size === stroke.size && hit.tool === stroke.tool) return hit;
+  return null;
+}
+
+function cacheStore(stroke, poly) {
+  const pts = stroke.pts;
+  const len = pts && typeof pts.length === 'number' ? pts.length : 0;
+  outlineCache.set(stroke, { pts, len, size: stroke.size, tool: stroke.tool, poly });
+  return poly;
+}
+
+/** Float32Array [x, y, ...] outline polygon of a committed pen stroke (cached by object identity). */
+function cachedOutline(stroke) {
+  const hit = cacheHit(stroke);
+  if (hit) return hit.poly;
   const k = computeOutline(stroke);
   const poly = new Float32Array(k * 2);
   for (let i = 0; i < k; i++) {
     poly[i * 2] = OUT.x[i];
     poly[i * 2 + 1] = OUT.y[i];
   }
-  outlineCache.set(stroke, { pts, len, size: stroke.size, tool: stroke.tool, poly });
-  return poly;
+  return cacheStore(stroke, poly);
+}
+
+/** Float32Array [x, y, ...] smoothed path of a committed highlighter (one point: a dot; cached). */
+function cachedPath(stroke) {
+  const hit = cacheHit(stroke);
+  if (hit) return hit.poly;
+  const m = computeCenterline(stroke);
+  const path = new Float32Array(m * 2);
+  for (let i = 0; i < m; i++) {
+    path[i * 2] = LINE.x[i];
+    path[i * 2 + 1] = LINE.y[i];
+  }
+  return cacheStore(stroke, path);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -545,49 +928,37 @@ function fillPen(ctx, stroke, useCache) {
   ctx.restore();
 }
 
-/** The highlighter's smoothed path, identical to the centreline used by strokeOutline. */
-function traceHighlighterPath(ctx, n) {
-  const X = RAW.x;
-  const Y = RAW.y;
-  ctx.moveTo(X[0], Y[0]);
-  if (n === 2) {
-    ctx.lineTo(X[1], Y[1]);
-    return;
+/** The highlighter's smoothed path (the centreline strokeOutline uses), cached for committed strokes. */
+function drawHighlighter(ctx, stroke, useCache) {
+  let path = null;
+  let m = 0;
+  if (useCache) {
+    path = cachedPath(stroke);
+    m = path.length >> 1;
+  } else {
+    m = computeCenterline(stroke);
   }
-  ctx.lineTo((X[0] + X[1]) / 2, (Y[0] + Y[1]) / 2);
-  for (let i = 1; i <= n - 2; i++) {
-    const mx = (X[i] + X[i + 1]) / 2;
-    const my = (Y[i] + Y[i + 1]) / 2;
-    if (isCorner(i)) {
-      ctx.lineTo(X[i], Y[i]);
-      ctx.lineTo(mx, my);
-    } else {
-      ctx.quadraticCurveTo(X[i], Y[i], mx, my);
-    }
-  }
-  ctx.lineTo(X[n - 1], Y[n - 1]);
-}
-
-function drawHighlighter(ctx, stroke) {
+  if (m === 0) return;
+  const px = (i) => (path ? path[i * 2] : LINE.x[i]);
+  const py = (i) => (path ? path[i * 2 + 1] : LINE.y[i]);
   const size = sizeOf(stroke);
-  const n = readRaw(stroke, Math.max(MIN_RADIUS, size / 2));
-  if (n === 0) return;
   const color = colorOf(stroke);
   const base = Number.isFinite(ctx.globalAlpha) ? ctx.globalAlpha : 1;
   ctx.save();
   ctx.globalAlpha = base * HIGHLIGHTER_ALPHA;
   ctx.globalCompositeOperation = 'multiply'; // ignored by canvases that do not support it
   ctx.beginPath();
-  if (n === 1) {
+  if (m === 1) {
     ctx.fillStyle = color;
-    ctx.arc(RAW.x[0], RAW.y[0], size / 2, 0, TAU);
+    ctx.arc(px(0), py(0), size / 2, 0, TAU);
     ctx.fill();
   } else {
     ctx.strokeStyle = color;
     ctx.lineWidth = size;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    traceHighlighterPath(ctx, n);
+    ctx.moveTo(px(0), py(0));
+    for (let i = 1; i < m; i++) ctx.lineTo(px(i), py(i));
     ctx.stroke();
   }
   ctx.restore();
@@ -599,7 +970,7 @@ function drawHighlighter(ctx, stroke) {
  */
 export function drawStroke(ctx, stroke) {
   if (!ctx || !stroke || typeof stroke !== 'object') return;
-  if (stroke.tool === 'highlighter') drawHighlighter(ctx, stroke);
+  if (stroke.tool === 'highlighter') drawHighlighter(ctx, stroke, true);
   else fillPen(ctx, stroke, true);
 }
 
@@ -618,7 +989,7 @@ export function drawStrokes(ctx, strokes) {
       continue;
     }
     if (s.tool === 'highlighter') {
-      drawHighlighter(ctx, s);
+      drawHighlighter(ctx, s, true);
       i++;
       continue;
     }
@@ -659,6 +1030,6 @@ export function drawStrokes(ctx, strokes) {
  */
 export function drawLiveStroke(ctx, partial) {
   if (!ctx || !partial || typeof partial !== 'object') return;
-  if (partial.tool === 'highlighter') drawHighlighter(ctx, partial);
+  if (partial.tool === 'highlighter') drawHighlighter(ctx, partial, false);
   else fillPen(ctx, partial, false);
 }

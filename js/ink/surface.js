@@ -11,6 +11,10 @@
  * the whole page box (CSS 100%) and their context transform maps [0,W]×[0,H] onto the backing store,
  * so drawing code never deals with CSS or device pixels.
  *
+ * Pen and highlighter samples go through InkStabilizer before they are stored or drawn: whole-pixel
+ * coordinates (WebKit before iPadOS 26.2) are reconstructed, a One Euro filter removes jitter without
+ * visible lag, and points are kept ≥ 0.75 CSS px apart (render.js then smooths the outline).
+ *
  * This module is importable in Node (no top-level DOM access); the DOM is reached through pageEl.
  */
 import { emptyPage, makeStroke, applyOp, invertOp, cloneStrokes, liveStrokes } from './model.js';
@@ -31,8 +35,27 @@ export const MAX_CANVAS_PIXELS = 16777216;
 export const UNDO_LIMIT = 200;
 /** Eraser radius in lu. */
 export const ERASER_RADIUS = 10;
-/** Input samples closer than this (lu) to the previous kept sample are jitter and dropped. */
+/** Stored ink points are never closer than this (lu), whatever the page scale (see STABILIZER.minSpacing). */
 export const MIN_POINT_DISTANCE = 0.3;
+/**
+ * Pencil input stabilizer (InkStabilizer). Distances in CSS px, so it behaves the same at every page scale.
+ * - Whole-pixel coordinates (WebKit ≤ iPadOS 26.1 reports Pencil clientX/clientY as integers, bug 133180;
+ *   the mouse too) are reconstructed between the moments the pixel value changes, which removes the
+ *   1-px staircase; fractional coordinates are used as they are.
+ * - One Euro filter: cutoff = minCutoff + beta × speed. A still or very slow pen is smoothed strongly,
+ *   a moving pen lags by at most 1 / (2π × beta) ≈ 0.3 px.
+ * - Stored points are at least minSpacing apart; the first and last real points are kept (with whole-pixel
+ *   input: where in its pixel the pen was, estimated from the neighbouring pixel crossings).
+ * - Pressure: exponential moving average (time constant pressureTau).
+ */
+export const STABILIZER = Object.freeze({
+  minCutoff: 1, // Hz
+  beta: 0.5, // per (CSS px / s)
+  dCutoff: 20, // Hz, low-pass of the speed estimate
+  minSpacing: 0.75, // CSS px between stored points
+  pressureTau: 12, // ms
+  nominalDt: 1000 / 240, // ms, when a sample has no usable timestamp (Pencil samples at 240 Hz)
+});
 /** 予定 tool: a gesture that never moves this far (lu) from its start is a tap. */
 export const EVENT_TAP_DISTANCE = 8;
 /** Padding (lu) around the strokes in snapshot(). */
@@ -50,6 +73,7 @@ const SELECTION_PAD_PX = 6;        // visual padding of the dashed selection box
 const SELECTION_HIT_PAD_PX = 12;   // extra grab margin around the selection box (screen px)
 const SNAPSHOT_MAX_ZOOM = 4;       // never enlarge a tiny selection more than this in snapshot()
 const CLICK_SUPPRESS_MS = 400;     // swallow the click that follows a mouse/finger ink gesture
+const FINGER_PAN_SLOP_PX = 12;     // allowFinger two-finger scroll starts after this (= the two-finger tap's maxMove)
 const ACCENT = '#2563eb';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const GESTURE_EVENTS = ['gesturestart', 'gesturechange', 'gestureend'];
@@ -173,6 +197,315 @@ export function finalizeStrokePoints(pts) {
     out.push(rx, ry, p);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input stabilizer (pure; exported for tests)
+// ---------------------------------------------------------------------------------------------
+
+const GRID_EPS = 1e-6;
+
+/** Coordinate grid of a sample: 1 (whole px), 0.5 (half px) or 0 (fractional). */
+function sampleGrid(x, y) {
+  if (Math.abs(x - Math.round(x)) < GRID_EPS && Math.abs(y - Math.round(y)) < GRID_EPS) return 1;
+  if (Math.abs(x * 2 - Math.round(x * 2)) < GRID_EPS && Math.abs(y * 2 - Math.round(y * 2)) < GRID_EPS) return 0.5;
+  return 0;
+}
+
+const onGrid = (v, g) => Math.abs(v / g - Math.round(v / g)) < GRID_EPS;
+
+/**
+ * One axis of a quantized input: the reported value q is the true value rounded to a grid g. Anchors
+ * (time, value) are placed where the value is known best — when q steps by one cell the true value
+ * crossed the cell boundary halfway between the two samples; after a bigger jump (fast pen) the samples
+ * themselves are the anchors. Between anchors the value follows a cubic Hermite curve whose tangents
+ * stay one-sided at turning points (the pen went into a cell and back out the same side: a small bump,
+ * not a flat cut), and the result is clamped to the sample's own cell. Where in its cell the pen
+ * started (and stopped) is extrapolated from the first (last) crossings when the pen was moving steadily.
+ */
+class QuantizedAxis {
+  constructor(t, q, g) {
+    this.g = g;
+    this.t = [t];
+    this.v = [q];
+    this.q0 = q;
+    this.lastT = t;
+    this.lastQ = q;
+    this.startSet = false;
+    this.done = false;
+  }
+
+  _clampToCell(v, q) {
+    const half = this.g / 2;
+    return v < q - half ? q - half : v > q + half ? q + half : v;
+  }
+
+  /** With two crossings known: the start value, extrapolated back if the pen moved off at once. */
+  _softStart() {
+    this.startSet = true;
+    const T = this.t;
+    const V = this.v;
+    const lead = T[1] - T[0];
+    const step = T[2] - T[1];
+    if (lead > 2 * step) return; // the pen rested before it moved: the cell centre is the best guess
+    V[0] = this._clampToCell(V[1] - ((V[2] - V[1]) / step) * lead, this.q0);
+  }
+
+  /** The final anchor (just pushed): extrapolated forward if the pen was still moving when it lifted. */
+  _softEnd() {
+    const T = this.t;
+    const V = this.v;
+    const n = T.length;
+    if (n < 3) return;
+    const trail = T[n - 1] - T[n - 2];
+    const step = T[n - 2] - T[n - 3];
+    if (trail > 2 * step) return;
+    V[n - 1] = this._clampToCell(V[n - 2] + ((V[n - 2] - V[n - 3]) / step) * trail, this.lastQ);
+  }
+
+  _push(t, v) {
+    const n = this.t.length;
+    if (t <= this.t[n - 1]) return;
+    this.t.push(t);
+    this.v.push(v);
+  }
+
+  add(t, q) {
+    const a = this.lastQ;
+    if (q !== a) {
+      if (Math.abs(q - a) <= this.g * (1 + GRID_EPS)) {
+        this._push((this.lastT + t) / 2, (a + q) / 2);
+      } else {
+        this._push(this.lastT, a);
+        this._push(t, q);
+      }
+      if (!this.startSet && this.t.length >= 3) this._softStart();
+    }
+    this.lastT = t;
+    this.lastQ = q;
+  }
+
+  finish() {
+    if (this.done) return;
+    const n = this.t.length;
+    this._push(this.lastT, this.lastQ);
+    if (this.t.length > n) this._softEnd();
+    this.done = true;
+  }
+
+  /** Temporarily behaves as if finished (live preview); returns the function that undoes it. */
+  pretendFinished() {
+    if (this.done) return () => {};
+    const n = this.t.length;
+    this.finish();
+    return () => {
+      this.t.length = n;
+      this.v.length = n;
+      this.done = false;
+    };
+  }
+
+  /** Samples up to this time have their final estimate (none before the start value is settled). */
+  stableUntil() {
+    if (this.done) return Infinity;
+    if (!this.startSet) return -Infinity;
+    return this.t[this.t.length - 2];
+  }
+
+  _tangent(i) {
+    const T = this.t;
+    const V = this.v;
+    const n = T.length;
+    const dp = i > 0 ? (V[i] - V[i - 1]) / (T[i] - T[i - 1]) : null;
+    const dn = i < n - 1 ? (V[i + 1] - V[i]) / (T[i + 1] - T[i]) : null;
+    if (dp === null) return dn === null ? 0 : dn;
+    if (dn === null) return dp;
+    if (dp === 0) return dn;
+    if (dn === 0) return dp;
+    if ((dp > 0) !== (dn > 0)) return 0;
+    return (V[i + 1] - V[i - 1]) / (T[i + 1] - T[i - 1]);
+  }
+
+  /** Estimated true value at time t of a sample that reported q (provisional while not stable). */
+  estimate(t, q) {
+    const T = this.t;
+    const V = this.v;
+    const n = T.length;
+    let lo = 0;
+    let hi = n - 1;
+    if (t >= T[hi]) lo = hi;
+    else {
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (T[mid] <= t) lo = mid;
+        else hi = mid;
+      }
+    }
+    let v;
+    if (lo === n - 1) {
+      v = V[lo] + (this.done ? 0 : this._tangent(lo) * (t - T[lo])); // not reached yet: extrapolate
+    } else {
+      const h = T[lo + 1] - T[lo];
+      const f = (t - T[lo]) / h;
+      const f2 = f * f;
+      const f3 = f2 * f;
+      v = (2 * f3 - 3 * f2 + 1) * V[lo] + (f3 - 2 * f2 + f) * h * this._tangent(lo)
+        + (3 * f2 - 2 * f3) * V[lo + 1] + (f3 - f2) * h * this._tangent(lo + 1);
+    }
+    return this._clampToCell(v, q);
+  }
+}
+
+/**
+ * Turns the raw samples of one stroke into the points that are stored (and drawn live).
+ * A sample is `{ cx, cy, p, t, left, top, scale }`: client px, pressure 0..1, timestamp (ms), and the
+ * page's client offset and scale at that moment (so a page that scrolls during the stroke is fine).
+ * Output: flat [x, y, p, ...] in page logical units, x/y rounded to 0.1 and p to 0.01 (the stored format),
+ * so the live preview and the committed stroke use exactly the same numbers.
+ */
+export class InkStabilizer {
+  constructor(first, opts = {}) {
+    this._o = { ...STABILIZER, ...opts };
+    const t = isFiniteNum(first.t) ? first.t : 0;
+    const s = { ...first, t };
+    this._grid = sampleGrid(s.cx, s.cy);
+    this._ax = new QuantizedAxis(t, s.cx, this._grid);
+    this._ay = new QuantizedAxis(t, s.cy, this._grid);
+    this._pending = [s];
+    this._last = s;
+    // Filter state (page CSS px): position, velocity, time, pressure, last stored point. The first
+    // final sample initialises it (with whole-pixel input that waits for the first pixel crossings).
+    this._f = { ready: false, x: 0, y: 0, dx: 0, dy: 0, t, p: s.p, kx: 0, ky: 0 };
+    /** Stored points so far (flat, rounded). Never rewritten except for pressure (setPressure). */
+    this.pts = [];
+    this._flush(false);
+  }
+
+  /** Feeds one raw sample. Returns true when stored points were added. */
+  add(sample) {
+    const prev = this._last;
+    let t = sample.t;
+    if (!isFiniteNum(t) || t <= prev.t) t = prev.t + this._o.nominalDt;
+    const s = { ...sample, t };
+    this._last = s;
+    if (this._grid > 0 && !(onGrid(s.cx, this._grid) && onGrid(s.cy, this._grid))) this._grid = 0; // fractional input
+    if (this._grid > 0) {
+      this._ax.add(t, s.cx);
+      this._ay.add(t, s.cy);
+    }
+    this._pending.push(s);
+    return this._flush(false);
+  }
+
+  /**
+   * The pen-up sample: it repeats the last position (only its pressure, usually 0, is new), so it only
+   * counts when the pen moved. This keeps the committed stroke identical to the last live frame.
+   */
+  addEnd(sample) {
+    const last = this._last;
+    if (sample.cx !== last.cx || sample.cy !== last.cy) return this.add(sample);
+    return false;
+  }
+
+  /** Every sample after the first got the fallback pressure: use the first real one instead. */
+  setPressure(p) {
+    const v = round2(p);
+    for (let i = 2; i < this.pts.length; i += 3) this.pts[i] = v;
+    for (const s of this._pending) s.p = p;
+    this._last.p = p;
+    this._f.p = p;
+  }
+
+  /** Ends the stroke: all samples become final, the last real point is kept exactly. Returns pts. */
+  finish() {
+    this._ax.finish();
+    this._ay.finish();
+    this._flush(true);
+    this._appendEnd(this.pts, this._f);
+    return this.pts;
+  }
+
+  /**
+   * What the stroke would be if the pen lifted now — exactly what finish() would return (live
+   * preview, so the ink does not change when the pen lifts). Does not change any state.
+   */
+  preview() {
+    const out = this.pts.slice();
+    const f = { ...this._f };
+    const undoX = this._ax.pretendFinished();
+    const undoY = this._ay.pretendFinished();
+    try {
+      for (const s of this._pending) this._step(s, f, out);
+      // The end point is estimated while the axes still count as finished: finish() places it the same
+      // way (final anchor + soft end), not by extrapolating along the last tangent.
+      this._appendEnd(out, f);
+    } finally {
+      undoX();
+      undoY();
+    }
+    return out;
+  }
+
+  _flush(all) {
+    const until = all || this._grid === 0 ? Infinity : Math.min(this._ax.stableUntil(), this._ay.stableUntil());
+    const before = this.pts.length;
+    let k = 0;
+    while (k < this._pending.length && this._pending[k].t <= until) this._step(this._pending[k++], this._f, this.pts);
+    if (k) this._pending.splice(0, k);
+    return this.pts.length > before;
+  }
+
+  /** One sample through reconstruction, One Euro, pressure EMA and spacing into `out` (state `f`). */
+  _step(s, f, out) {
+    const o = this._o;
+    const g = this._grid;
+    const x = (g > 0 ? this._ax.estimate(s.t, s.cx) : s.cx) - s.left;
+    const y = (g > 0 ? this._ay.estimate(s.t, s.cy) : s.cy) - s.top;
+    if (!f.ready) { // the first real point: kept as it is
+      Object.assign(f, { ready: true, x, y, t: s.t, p: isFiniteNum(s.p) ? s.p : 0.5, kx: x, ky: y });
+      out.push(round1(x / s.scale), round1(y / s.scale), round2(f.p));
+      return;
+    }
+    const dt = Math.max(1e-3, (s.t - f.t) / 1000);
+    f.t = s.t;
+    const ad = oneEuroAlpha(o.dCutoff, dt);
+    f.dx += ad * ((x - f.x) / dt - f.dx);
+    f.dy += ad * ((y - f.y) / dt - f.dy);
+    const a = oneEuroAlpha(o.minCutoff + o.beta * Math.hypot(f.dx, f.dy), dt);
+    f.x += a * (x - f.x);
+    f.y += a * (y - f.y);
+    f.p += (1 - Math.exp(-(dt * 1000) / o.pressureTau)) * ((isFiniteNum(s.p) ? s.p : 0.5) - f.p);
+    const spacing = Math.max(o.minSpacing, MIN_POINT_DISTANCE * s.scale);
+    if (Math.hypot(f.x - f.kx, f.y - f.ky) < spacing) return;
+    f.kx = f.x;
+    f.ky = f.y;
+    out.push(round1(f.x / s.scale), round1(f.y / s.scale), round2(f.p));
+  }
+
+  /**
+   * The pen's last real position ends the stroke: it replaces a stored point closer than the spacing
+   * (the filtered points trail the pen slightly), except the first point — a tap stays a dot.
+   */
+  _appendEnd(out, f) {
+    const s = this._last;
+    const g = this._grid;
+    const x = (g > 0 ? this._ax.estimate(s.t, s.cx) : s.cx) - s.left;
+    const y = (g > 0 ? this._ay.estimate(s.t, s.cy) : s.cy) - s.top;
+    const spacing = Math.max(this._o.minSpacing, MIN_POINT_DISTANCE * s.scale);
+    const n = out.length / 3;
+    const lx = out[out.length - 3] * s.scale;
+    const ly = out[out.length - 2] * s.scale;
+    const close = Math.hypot(x - lx, y - ly) < spacing;
+    if (close && n === 1) return;
+    if (close) out.length -= 3;
+    out.push(round1(x / s.scale), round1(y / s.scale), round2(f.p));
+  }
+}
+
+/** One Euro smoothing factor for a cutoff (Hz) and a time step (s). */
+function oneEuroAlpha(cutoff, dt) {
+  const tau = 1 / (2 * Math.PI * cutoff);
+  return 1 / (1 + tau / dt);
 }
 
 /**
@@ -939,15 +1272,18 @@ export class InkSurface {
     const fingers = this._fingersOnPage(e.touches);
     const g = this._gesture;
     const penOrMouse = !!g && g.pointerType !== 'touch'; // never scroll the page under the Pencil
-    if (this._fingerPan || (!penOrMouse && this._fingerClaim && fingers.length >= 2)) {
+    const target = e.changedTouches?.[0]?.target ?? e.target;
+    // pointerdown usually precedes touchstart in WebKit; handle either order.
+    const claimable = this._fingerClaim || (!!g && g.pointerType === 'touch') || (!g && this._canStartGesture('touch', 0, target));
+    // Two fingers: a scroll (and maybe the two-finger tap → eraser), never ink — also when both landed in
+    // the same touchstart, where the first finger's pointerdown has already begun a stroke.
+    if (this._fingerPan || (!penOrMouse && claimable && fingers.length >= 2)) {
       if (g && g.pointerType === 'touch') this._cancelGesture(); // the first finger's ink is discarded
       this._fingerClaim = true;
       this._startFingerPan(fingers);
       return;
     }
-    const target = e.changedTouches?.[0]?.target ?? e.target;
-    // pointerdown usually precedes touchstart in WebKit; handle either order.
-    if ((g && g.pointerType === 'touch') || (!g && this._canStartGesture('touch', 0, target))) this._fingerClaim = true;
+    if (claimable && !penOrMouse) this._fingerClaim = true;
   }
 
   /** Finger (non-stylus) touches of a TouchList that started inside the page. */
@@ -961,6 +1297,7 @@ export class InkSurface {
     return out;
   }
 
+  /** (Re-)anchors the two-finger scroll at the fingers' centroid; a scroll already under way keeps going. */
   _startFingerPan(fingers) {
     const vp = this._viewportEl;
     const c = touchCentroid(fingers);
@@ -969,6 +1306,7 @@ export class InkSurface {
       y: c ? c.y : NaN,
       left: Number(vp?.scrollLeft) || 0,
       top: Number(vp?.scrollTop) || 0,
+      moving: !!this._fingerPan?.moving,
     };
   }
 
@@ -976,6 +1314,15 @@ export class InkSurface {
     const pan = this._fingerPan;
     const c = touchCentroid(fingers);
     if (!pan || !c) return;
+    if (!pan.moving) {
+      // A tap wobbles a little: nothing scrolls until the fingers really move (the two-finger tap stays a
+      // tap), then the scroll starts from here — no jump by the slop.
+      if (isFiniteNum(pan.x) && isFiniteNum(pan.y) && Math.hypot(c.x - pan.x, c.y - pan.y) < FINGER_PAN_SLOP_PX) return;
+      pan.moving = true;
+      pan.x = c.x;
+      pan.y = c.y;
+      return;
+    }
     const vp = this._viewportEl;
     // (Fingers cannot ink while scrolling, so an active gesture is the Pencil / mouse: keep the page still.)
     if (vp && !this._gesture && isFiniteNum(pan.x) && isFiniteNum(pan.y)) {
@@ -1071,13 +1418,13 @@ export class InkSurface {
     const scale = resolveScale(rect, this._info.W, this._info.scale);
     // Coalesced entries may lack pointerId (Safari 18.2): the parent event was already filtered.
     const coalesced = listFrom(e, 'getCoalescedEvents');
-    const pts = [];
+    const samples = [];
     for (const ev of coalesced.length ? coalesced : [e]) {
       const pending = g.pressurePending;
       const s = this._toSample(ev, g, rect, scale, true);
       if (!s) continue;
-      if (pending && !g.pressurePending) for (let i = 2; i < pts.length; i += 3) pts[i] = s.p; // fallbacks of this batch
-      pts.push(s.x, s.y, s.p);
+      if (pending && !g.pressurePending) for (const q of samples) q.p = s.p; // fallbacks of this batch
+      samples.push(s);
     }
     const predicted = [];
     if (g.kind === 'ink') {
@@ -1086,14 +1433,15 @@ export class InkSurface {
         if (s) predicted.push(s.x, s.y, s.p);
       }
     }
-    this._feed(g, pts, predicted);
+    this._feed(g, samples, predicted);
   }
 
   _onPointerUp(e) {
     const g = this._gesture;
     if (!g || e.pointerId !== g.pointerId) return;
     const s = this._sampleFromEvent(e, g);
-    if (s) this._feed(g, [s.x, s.y, s.p], []);
+    if (s && g.kind === 'ink') g.stab.addEnd(s);
+    else if (s) this._feed(g, [s], []);
     this._finishGesture();
   }
 
@@ -1116,6 +1464,10 @@ export class InkSurface {
     return this._toSample(e, g, rect, resolveScale(rect, this._info.W, this._info.scale), true);
   }
 
+  /**
+   * One input sample: x, y in page logical units, pressure p, and for the ink stabilizer the client
+   * coordinates (cx, cy), timestamp t and the page's client offset and scale.
+   */
   _toSample(ev, g, rect, scale, updatePressure) {
     const { x, y } = clientToLogical(ev.clientX, ev.clientY, rect, scale);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -1125,10 +1477,19 @@ export class InkSurface {
       if (g.pressurePending && isFiniteNum(ev.pressure) && ev.pressure > 0) {
         // Until now every sample used the 0.5 fallback (pen-down reported 0): use the first real pressure.
         g.pressurePending = false;
-        if (g.kind === 'ink') for (let i = 2; i < g.pts.length; i += 3) g.pts[i] = p;
+        if (g.kind === 'ink') g.stab.setPressure(p);
       }
     }
-    return { x, y, p };
+    const s = isFiniteNum(scale) && scale > 0 ? scale : 1;
+    return {
+      x, y, p,
+      cx: Number(ev.clientX),
+      cy: Number(ev.clientY),
+      t: ev.timeStamp,
+      left: rect && isFiniteNum(rect.left) ? rect.left : 0,
+      top: rect && isFiniteNum(rect.top) ? rect.top : 0,
+      scale: s,
+    };
   }
 
   // ------------------------------------------------------------------ gestures
@@ -1138,10 +1499,9 @@ export class InkSurface {
     const style = this._styles[tool];
     const g = {
       ...base, kind: 'ink', tool, color: style.color, size: style.size,
-      pts: [pt.x, pt.y, pt.p], predicted: [], liveRect: null,
+      stab: new InkStabilizer(pt), predicted: [], liveRect: null,
     };
-    g.partial = { tool, color: g.color, size: g.size, pts: g.pts };
-    g.pad = penWidth(g.partial, 1) / 2 + DIRTY_PAD;
+    g.pad = penWidth(g, 1) / 2 + DIRTY_PAD;
     this._gesture = g;
     // The committed highlighter multiplies under the pens; on the live canvas (above the base) the same
     // look needs the canvas itself to multiply with what is below it.
@@ -1175,37 +1535,35 @@ export class InkSurface {
     this._schedule('live');
   }
 
-  /** Feeds flat [x, y, p, ...] samples (and predicted samples for ink) into the active gesture. */
-  _feed(g, pts, predicted) {
-    const n = pts.length;
+  /** Feeds input samples (_toSample) and, for ink, flat [x, y, p, ...] predicted samples into the active gesture. */
+  _feed(g, samples, predicted) {
+    const n = samples.length;
     switch (g.kind) {
       case 'ink':
-        for (let i = 0; i + 2 < n; i += 3) {
-          if (shouldAppendPoint(g.pts, pts[i], pts[i + 1])) g.pts.push(pts[i], pts[i + 1], pts[i + 2]);
-        }
+        for (const s of samples) g.stab.add(s);
         g.predicted = predicted;
         this._schedule('live');
         break;
       case 'erase': {
-        for (let i = 0; i + 2 < n; i += 3) {
-          const samples = samplePointsAlong(g.x, g.y, pts[i], pts[i + 1], ERASER_RADIUS / 2);
-          for (let j = 0; j + 1 < samples.length; j += 2) this._eraseAt(g, samples[j], samples[j + 1]);
-          g.x = pts[i];
-          g.y = pts[i + 1];
+        for (const s of samples) {
+          const along = samplePointsAlong(g.x, g.y, s.x, s.y, ERASER_RADIUS / 2);
+          for (let j = 0; j + 1 < along.length; j += 2) this._eraseAt(g, along[j], along[j + 1]);
+          g.x = s.x;
+          g.y = s.y;
         }
         this._schedule('live');
         break;
       }
       case 'lasso':
-        for (let i = 0; i + 2 < n; i += 3) {
-          if (shouldAppendPoint(g.pts, pts[i], pts[i + 1], LASSO_MIN_STEP, 2)) g.pts.push(pts[i], pts[i + 1]);
+        for (const s of samples) {
+          if (shouldAppendPoint(g.pts, s.x, s.y, LASSO_MIN_STEP, 2)) g.pts.push(s.x, s.y);
         }
         this._schedule('overlay');
         break;
       case 'move': {
-        if (n < 3) break;
-        const rawDx = pts[n - 3] - g.x0;
-        const rawDy = pts[n - 2] - g.y0;
+        if (n < 1) break;
+        const rawDx = samples[n - 1].x - g.x0;
+        const rawDy = samples[n - 1].y - g.y0;
         if (!g.active) {
           // Screen distance: at month scale (≈ 0.6) a few lu are only the drift of a Pencil tap.
           if (Math.hypot(rawDx, rawDy) * this._info.scale < MOVE_START_PX) break;
@@ -1222,10 +1580,10 @@ export class InkSurface {
         break;
       }
       case 'event':
-        for (let i = 0; i + 2 < n; i += 3) {
-          g.maxDist = Math.max(g.maxDist, Math.hypot(pts[i] - g.x0, pts[i + 1] - g.y0));
-          g.x1 = pts[i];
-          g.y1 = pts[i + 1];
+        for (const s of samples) {
+          g.maxDist = Math.max(g.maxDist, Math.hypot(s.x - g.x0, s.y - g.y0));
+          g.x1 = s.x;
+          g.y1 = s.y;
         }
         this._schedule('live');
         break;
@@ -1285,7 +1643,7 @@ export class InkSurface {
   }
 
   _endInk(g) {
-    const pts = finalizeStrokePoints(g.pts);
+    const pts = finalizeStrokePoints(g.stab.finish());
     if (!pts.length) return;
     const stroke = makeStroke({ tool: g.tool, color: g.color, size: g.size, pts, t: Date.now() });
     this._commitOp({ type: 'add', strokes: [stroke] });
@@ -1692,8 +2050,10 @@ export class InkSurface {
   /**
    * In-progress pen / highlighter stroke: each frame redraws the whole partial stroke (plus the
    * predicted samples) with drawLiveStroke — the same outline pipeline as the committed stroke, so the
-   * ink does not change shape when the Pencil lifts, and a highlighter never darkens itself. Only the
-   * area the previous frame drew is cleared.
+   * ink does not change shape when the Pencil lifts, and a highlighter never darkens itself. The partial
+   * stroke is InkStabilizer.preview(): the stored points so far, the not-yet-final samples estimated
+   * provisionally, and the pen's current position — exactly what finish() returns if the pen lifts now.
+   * Only the area the previous frame drew is cleared.
    */
   _renderLiveInk(ctx, g) {
     const prev = g.liveRect ? this._devicePxRect(this._liveCanvas, g.liveRect) : null;
@@ -1705,11 +2065,12 @@ export class InkSurface {
     } else {
       this._clearLive();
     }
-    const pts = g.predicted.length ? g.pts.concat(g.predicted) : g.pts;
+    const stroke = g.stab.preview();
+    const pts = g.predicted.length ? stroke.concat(g.predicted) : stroke;
     g.liveRect = flatBounds(pts, 3, g.pad);
     ctx.save();
     try {
-      drawLiveStroke(ctx, pts === g.pts ? g.partial : { tool: g.tool, color: g.color, size: g.size, pts });
+      drawLiveStroke(ctx, { tool: g.tool, color: g.color, size: g.size, pts });
     } catch (err) {
       warn('drawLiveStroke failed', err);
     }

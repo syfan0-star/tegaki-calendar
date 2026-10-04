@@ -35,7 +35,12 @@ const WEEK_COL_W = (WEEK.W - WEEK.gutter) / WEEK.cols;
 const MONTH = PAGE_SPECS.month;
 const MONTH_CELLS = MONTH.cols * MONTH.rows;
 const CELL_W = MONTH.W / MONTH.cols;
-const CELL_H = MONTH.H / MONTH.rows;
+// The month grid is gridH tall (the page continues below it with a memo area since 1.0.5). The old
+// Sunday-start month pages were exactly that grid (1400×1050): they have no strokes in the memo area.
+const CELL_H = MONTH.gridH / MONTH.rows;
+/** Area a copied stroke lying inside it must stay inside: the old page (week page; month grid). */
+const WEEK_AREA = { W: WEEK.W, H: WEEK.H };
+const MONTH_AREA = { W: MONTH.W, H: MONTH.gridH };
 
 /**
  * kv key marking `pageId` as copied. 'v2': flags written by the first 1.0.4 build (which could drop or
@@ -150,9 +155,9 @@ function fitShift(shift, min, max, size) {
   return Math.min(size - max, Math.max(-min, shift));
 }
 
-function moved(stroke, bbox, off, spec) {
-  const dx = fitShift(off.dx, bbox.minX, bbox.maxX, spec.W);
-  const dy = fitShift(off.dy, bbox.minY, bbox.maxY, spec.H);
+function moved(stroke, bbox, off, area) {
+  const dx = fitShift(off.dx, bbox.minX, bbox.maxX, area.W);
+  const dy = fitShift(off.dy, bbox.minY, bbox.maxY, area.H);
   const pts = stroke.pts.slice();
   for (let i = 0; i + 1 < pts.length; i += 3) {
     pts[i] = Math.round((pts[i] + dx) * 10) / 10;
@@ -179,7 +184,7 @@ export function legacyStrokesFor(pageId, sourceDocs) {
   const monday = mondayOf(pageId);
   const first = monday ? null : monthOf(pageId);
   if (!monday && !first) return [];
-  const spec = monday ? WEEK : MONTH;
+  const area = monday ? WEEK_AREA : MONTH_AREA;
   const out = [];
   for (const sourceId of legacySourcesFor(pageId)) {
     const doc = get(sourceId);
@@ -191,7 +196,7 @@ export function legacyStrokesFor(pageId, sourceDocs) {
       if (!bbox) continue;
       const center = { x: (bbox.minX + bbox.maxX) / 2, y: (bbox.minY + bbox.maxY) / 2 };
       const off = monday ? weekOffset(sourceId, monday, center) : monthOffset(first, sourceFirst, center);
-      if (off) out.push(moved(stroke, bbox, off, spec));
+      if (off) out.push(moved(stroke, bbox, off, area));
     }
   }
   return out;

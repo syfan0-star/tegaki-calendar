@@ -8,9 +8,9 @@ inside your own file. Do not edit files owned by another module.
 
 An iPad web app (Safari + home-screen standalone PWA) that:
 
-- shows the user's Google Calendar in **day / week / month** views,
+- shows the user's Google Calendar in **day / week / month / year** views (1.0.5: year page 年間予定表),
 - lets the user **handwrite with Apple Pencil** freely on every page (each view+date is its own "page",
-  like a paper planner: a monthly page, weekly pages, daily pages),
+  like a paper planner: a yearly page, a monthly page with a memo area below its grid, weekly pages, daily pages),
 - saves the handwriting as vector strokes to **Google Drive appDataFolder** (local IndexedDB first,
   then synced; conflict-free merge between devices),
 - turns handwriting into Google Calendar **events**: (a) the 予定 tool — drag over a time range with
@@ -49,6 +49,7 @@ js/views/event-layout.js   A
 js/views/day-view.js       F1
 js/views/week-view.js      F1
 js/views/month-view.js     F1
+js/views/year-view.js      F1   (1.0.5: year page)
 js/views/view-common.js    F1
 js/google/http.js          C
 js/google/auth.js          C
@@ -68,6 +69,7 @@ js/ui/settings.js          F2b
 js/ui/selection-menu.js    F2b
 js/ui/toast.js             F2b
 js/ui/dom.js               F2b  (tiny helpers: h(tag, attrs, ...children), clear(el), svgIcon(name))
+js/ui/gestures.js          F2a  (1.0.5: two-finger tap → pen ⇄ eraser; pure recognizer, §8)
 tests/*.test.mjs           each owner tests their own modules (node --test); tests/app-shell.test.mjs: sw.js / manifest / index.html
 package.json               (lead)  "type":"module", scripts.test = "TZ=Asia/Tokyo node --test 'tests/*.test.mjs'" (Node 24 treats a bare directory as a module path)  (run: export PATH="$HOME/.local/node/bin:$PATH"; npm test  — or TZ=Asia/Tokyo node --test tests/xxx.test.mjs)
 ```
@@ -121,53 +123,71 @@ Settings (owned by F2's state.js, persisted in localStorage key `tegaki.settings
   allowFinger: false, eraseInkAfterConvert: true,
   hiddenCalendarIds: [] /* calendars the user unchecked */, defaultCalendarId: null /* null → primary */,
   demo: false, tool: 'pen', penColor: '#1f2937', penSize: 'medium', hlColor: '#fde047',
-  view: 'week', date: 'YYYY-MM-DD' /* last route */ }
+  lastInkTool: 'pen' /* 1.0.5, derived: the last of 'pen' | 'highlighter' selected (the two-finger tap goes back to it) */,
+  view: 'week' /* 'day' | 'week' | 'month' | 'year' */, date: 'YYYY-MM-DD' /* last route */ }
 ```
 
 ## 3. Page geometry (module A: js/views/page-geometry.js)
 
 Each page has a fixed **logical coordinate system** (units "lu"), origin top-left. The page is
-rendered at `scale = pageCssWidth / W` (fit mode `width`: day/week, the viewport scrolls vertically)
-or `scale = min(vw/W, vh/H)` (fit `contain`: month, centered, no scroll). Grid, events and ink all
-live in this coordinate system so ink stays aligned regardless of iPad model or orientation.
+rendered at `scale = pageCssWidth / W` (fit mode `width`: day/week/year, the viewport scrolls vertically),
+`scale = min(vw/W, (vh − 28)/gridH)` (fit `grid`, 1.0.5: month — the whole 6-week grid fits the screen,
+centered horizontally; the page continues below it with the memo area, whose top 28 px (MEMO_PEEK_PX)
+peeks in, and the viewport scrolls vertically) or `scale = min(vw/W, vh/H)` (fit `contain`: centered, no
+scroll; no page uses it since 1.0.5). Grid, events and ink all live in this coordinate system so ink stays
+aligned regardless of iPad model or orientation.
 
 ```js
-export const VIEWS = ['day', 'week', 'month'];
+export const VIEWS = ['day', 'week', 'month', 'year'];
 export const PAGE_SPECS = {
   day:   { W: 1000, H: 2400, gutter: 72, hourH: 100, timelineRight: 660, fit: 'width' },
   // day: time labels in [0,gutter); timeline column [gutter, timelineRight); free memo area [timelineRight, W)
   week:  { W: 1400, H: 1920, gutter: 64, hourH: 80, cols: 7, fit: 'width' },
   // week: col i spans [gutter + i*colW, gutter + (i+1)*colW), colW = (W - gutter)/7
-  month: { W: 1400, H: 1050, cols: 7, rows: 6, fit: 'contain' },
-  // month: cell (r,c) = x c*200, y r*175, 200x175
+  month: { W: 1400, H: 1750, gridH: 1050, memoTop: 1050, cols: 7, rows: 6, fit: 'grid' },
+  // month: cell (r,c) = x c*200, y r*175, 200x175 (the grid is y < gridH); y in [memoTop, H) is a free memo
+  //   area (メモ欄, ruled, label 「メモ」) of the same ink page. Pages written by 1.0.4 (H 1050) keep their
+  //   coordinates: they simply gain the empty memo area. Month cell geometry ALWAYS uses gridH, never H.
+  year:  { W: 1400, H: 1860, gutter: 56, cols: 12, rows: 31, rowH: 60, fit: 'width' },
+  // year (1.0.5, 年間予定表): day numbers 1..31 in [0, gutter); month m (0 = Jan) is the column
+  //   [gutter + m*112, gutter + (m+1)*112), day d (1..31) the row [(d-1)*60, d*60).
 };
 export function pageIdFor(view, date, weekStart)  // the app always passes weekStart 1 (Monday):
                                                   // 'd-2026-10-04' | 'w-2026-09-28' (the Monday) | 'm1-2026-10' (Monday-start grid)
+                                                  // | 'y-2026' (the year grid does not depend on weekStart)
                                                   // The Sunday-start ids of before 1.0.4 ('w-<sunday>', 'm-YYYY-MM') are never shown
                                                   // any more: they are only copy sources (js/ink/legacy-week-start.js).
 export function rangeFor(view, date, weekStart)   // { start: Date, end: Date /*exclusive*/, days: Date[] }
                                                   // day: 1 day; week: 7 days Mon–Sun from startOfWeek; month: 42 days from monthGridStart (a Monday)
                                                   // month also returns { monthStart: Date } (1st of the month)
-export function navigate(view, date, delta)        // day ±1 day, week ±7 days, month ±1 month (returns 1st of month)
-export function minutesToY(view, minutes)          // day/week only: minutes * hourH / 60
+                                                  // year: Jan 1 → next Jan 1, every day of the year, plus { yearStart: Date } (Jan 1)
+export function navigate(view, date, delta)        // day ±1 day, week ±7 days, month ±1 month (returns 1st of month), year ±1 year (Jan 1)
+export function minutesToY(view, minutes)          // day/week only: minutes * hourH / 60 (throws for month/year)
 export function yToMinutes(view, y)                // inverse, clamped [0, 1440]
-export function columnRect(view, col)              // day: col 0 → { x: gutter, w: timelineRight-gutter }; week: per day col
-export function xToColumn(view, x)                 // day: 0 if in timeline, -1 otherwise (gutter or memo); week: 0..6 or -1 (gutter)
+export function columnRect(view, col)              // day: col 0 → { x: gutter, w: timelineRight-gutter }; week: per day col; year: per month col
+export function xToColumn(view, x)                 // day: 0 if in timeline, -1 otherwise (gutter or memo); week: 0..6 or -1 (gutter); year: 0..11 or -1
 export function monthCellRect(row, col)            // { x, y, w, h }
-export function monthCellAt(x, y)                  // { row, col } or null
-export function rectToEventRange(view, range, rect)
+export function monthCellAt(x, y)                  // { row, col } or null (outside the page, or in the memo area y ≥ gridH)
+export function yearCellRect(monthIndex, day)      // { x, y, w, h } | null; geometry only (2/30, 4/31… have a hatched cell too)
+export function yearCellAt(x, y, year?)            // { month: 0..11, day: 1..31, valid } | null (gutter / outside);
+                                                  //   valid false for dates that do not exist (2/29 needs `year`; without it valid)
+export function rectToEventRange(view, range, rect, now?)
   // Converts a logical rect (lasso bbox or 予定-tool drag rect) into { start: Date, end: Date, allDay: boolean }.
   // day/week: column = xToColumn(center x) (day: if -1 use col 0); start = round15(yToMinutes(minY)),
   //   end = round15(yToMinutes(maxY)) (nearest 15 min: a drag ending a few lu past 15:00 is still 15:00);
   //   if end - start < 30 → end = start + 60 (tap-like/small) ; clamp end ≤ 1440 (start < end always).
   //   If rect height < 12 lu (a tap) → start = floor30(minutesAtCenterY), end = start + 60.
   // month: cell at center → allDay event on that date: start = that day 00:00, end = next day 00:00.
+  //   A center in the memo area (y ≥ gridH) → today when today is in that month, else the 1st of the month.
+  // year: cell at center (gutter → January) → allDay event on that date; a date that does not exist
+  //   (2/30, 4/31…) becomes the month's last day.
   //   (Week: if column is -1 use the column nearest to center.)
-export function snapEventRect(view, range, rect)
+  // `now` (optional, default the current time) only decides the month memo area's day.
+export function snapEventRect(view, range, rect, now?)
   // Returns the logical rect that the resulting event would occupy (for the live preview while dragging
   // with the 予定 tool): day/week → { minX: colX, maxX: colX+colW, minY: minutesToY(start), maxY: minutesToY(end) };
-  // month → the cell rect.
-export function pointToSlot(view, range, x, y)     // { date: Date, minutes: number|null } | null  (month → minutes null)
+  // month → the cell rect (memo area → the memo day's cell); year → the cell of the event's date.
+export function pointToSlot(view, range, x, y, now?) // { date: Date, minutes: number|null } | null  (month/year → minutes null)
 ```
 
 ## 4. Module APIs
@@ -258,7 +278,20 @@ export function strokeOutline(stroke)         // pen: closed polygon flat array 
 export function drawStroke(ctx, stroke)       // ctx already scaled to logical units; pen → fill outline; highlighter → round-cap path with alpha
 export function drawStrokes(ctx, strokes)
 export function drawLiveStroke(ctx, partial)  // same visual as drawStroke for an in-progress stroke {tool,color,size,pts}
+export function strokeCenterline(stroke), outlineOfCenterline(flat [x, y, r, ...])  // 1.0.5 extras (tests)
 ```
+Smoothing pipeline (1.0.5; the stroke format is unchanged, so strokes saved earlier are drawn smoother too — their
+pixel-step kinks are removed, but on shallow lines a gentle wave of up to ~0.4 CSS px remains, since σ is far shorter
+than the staircase's period; new strokes are reconstructed by InkStabilizer when written and need no more):
+1. midpoint-quadratic curve through the stored points; a stored point stays a sharp corner only when the turn is
+   > 75° AND both segments are ≥ max(3 lu, 1.5 × width at pressure 0.5) (a 1-px staircase never makes corners);
+2. resample every 1 lu of arc length; 3. corners of dense strokes: turn > 75° over that leg length, concentrated
+   (half the window holds ≥ 80 % of the turn — tight loops are not corners), snapped onto the stored point;
+4. Gaussian smoothing σ = 1.2 lu between corners (ends and corners pinned by point reflection; clamped to the
+   stored points' bounds so strokeBBox still contains the outline); 5. width EMA over 6 lu + slope limit;
+   collinear points dropped. Outline, caps and joins as before. The highlighter is one lineTo polyline along the
+   same smoothed centreline (cached like pen outlines), stroked once with alpha and 'multiply'.
+Tuning constants: SMOOTH_SIGMA, CORNER_* in render.js.
 ### B. js/ink/legacy-week-start.js (1.0.4: Sunday-start pages → Monday-start pages)
 Ink written before 1.0.4 on 'w-<sunday>' / 'm-YYYY-MM' pages is copied onto the Monday page now showing the same date
 (pure module; main.js `carryLegacyInk` runs it after every page load / refresh and after Drive is attached).
@@ -266,6 +299,8 @@ Ink written before 1.0.4 on 'w-<sunday>' / 'm-YYYY-MM' pages is copied onto the 
 export function legacySourcesFor(pageId)  // 'w-<monday>' → ['w-<monday−1>' (gives Mon–Sat), 'w-<monday+6>' (gives its Sunday)]
                                           // 'm1-X' → ['m-X', 'm-(X−1)', 'm-(X+1)']: a neighbouring month's old grid gives the
                                           //   dates its own new grid no longer shows. Other ids → [].
+  // Month cells of the old pages are measured with PAGE_SPECS.month.gridH (the old 1400×1050 grid), never H:
+  // since 1.0.5 the month page continues below the grid with its memo area, and old strokes never land there.
 export function legacyStrokesFor(pageId, sourceDocs) // live strokes of the sources that belong here, moved by whole columns/cells
   // so they stay on their date (assigned by bbox centre; every old stroke lands on exactly one page; week gutter / off-grid
   // strokes stay unmoved with the Mon–Sat page / the same month). A stroke lying inside the page is clamped to stay inside.
@@ -285,7 +320,7 @@ and none was unreadable; the merged page is saved (awaited) before the flag is w
 
 ### C. js/config.js
 ```js
-export const APP_VERSION = '1.0.4';
+export const APP_VERSION = '1.0.5';
 export const GOOGLE_CLIENT_ID = '';  // filled in after Google Cloud setup ('' → Google features disabled, demo only)
 export const SCOPES = { events: '.../calendar.events', calList: '.../calendar.calendarlist.readonly', appdata: '.../drive.appdata' }; // full URLs, see §6
 export const PAGES_ORIGIN_PATH = 'https://syfan0-star.github.io/tegaki-calendar/';
@@ -454,7 +489,22 @@ export class InkSurface {
                                          // committed; a selection move, lasso or 予定 drag is cancelled
   destroy()
 }
+export class InkStabilizer               // 1.0.5: raw samples of one pen/highlighter stroke → stored points (pure, tested)
+  // new InkStabilizer(first); add(sample); addEnd(sample) (pen-up: ignored when it repeats the last position);
+  // setPressure(p) (pen-down reported 0: use the first real pressure); preview() → what finish() would return now;
+  // finish() → flat [x, y, p, ...] in lu, rounded like the stored format.
+  // sample = { cx, cy (client px), p, t (ms), left, top (page client offset), scale } — page scrolling mid-stroke is fine.
+export const STABILIZER                  // { minCutoff 1 Hz, beta 0.5 /(px/s), dCutoff 20 Hz, minSpacing 0.75 CSS px, pressureTau 12 ms, nominalDt }
 ```
+Ink samples (1.0.5) go through InkStabilizer, all distances in CSS px so it behaves the same at every scale:
+1. whole-pixel reconstruction — WebKit before iPadOS 26.2 reports Pencil clientX/clientY as whole CSS px (WebKit
+   bug 133180 made them fractional); when a stroke's samples sit on a 1 or 0.5 px grid, each axis is rebuilt from
+   anchors where the pixel value changes (cubic Hermite in between, clamped to the sample's own pixel; start/end
+   extrapolated from the first/last crossings). Fractional input passes through unchanged;
+2. 2-D One Euro filter (lag ≤ ~0.3 px); 3. stored points ≥ 0.75 CSS px apart (and ≥ MIN_POINT_DISTANCE 0.3 lu);
+4. the first and last real points are kept (a tap stays a dot); 5. pressure EMA (12 ms).
+The stored points are the stabilized ones (format unchanged). The live canvas draws InkStabilizer.preview(), which is
+exactly what is committed on pen-up. shouldAppendPoint is used only by the lasso.
 Input rules (see §7 for the iPad recipe): Pencil (pointerType 'pen') always draws with the active tool.
 Touch (finger) never draws unless allowFinger; it scrolls/taps normally. Mouse / trackpad (pointerType 'mouse',
 button 0) always draws (desktop dev, iPad trackpad) — but a mouse click on an event box (closest('.event')) is a tap,
@@ -471,11 +521,24 @@ export function createPageElements(viewportEl)  // clears viewportEl, creates & 
                                                 // → { pageEl, gridEl, eventsEl }  (the ink surface adds its canvases later, z3–5)
 export function applyPageScale({ viewportEl, pageEl, spec })
   // fit 'width': scale = viewportEl.clientWidth / W ; fit 'contain': scale = min(clientWidth / W, clientHeight / H)
-  // sets pageEl.style.width/height (W*scale, H*scale px), margin-left for centering (contain), CSS var --s = scale
+  // fit 'grid' (month): scale = min(clientWidth / W, (clientHeight − MEMO_PEEK_PX) / gridH), centered like 'contain'
+  // sets pageEl.style.width/height (W*scale, H*scale px), margin-left for centering (contain/grid), CSS var --s = scale,
+  // pageEl data-fit = pageFitOf(spec)
   // → { scale, cssW, cssH, offsetX }  (offsetX = left offset of the page inside the viewport, for aligning stickyEl)
+export const MEMO_PEEK_PX = 28; export function pageFitOf(spec)  // 'width' | 'contain' | 'grid'
+export function keepPageInPlace(pageEl, fit, fn)  // scrolling pages ('width' and 'grid') keep their on-screen position
+  // — except a 'grid' page (month) scrolled to its very top: it stays at the top (no compensation), so a banner never
+  // scrolls the first week under the header (banners are deferred while drawing, so the paper never moves under the pen)
+export function scrollMemoryRatio(fit, vp)  // 1.0.5: ratio (viewport centre / content height) remembered when a page is
+  // left or reloaded through the sign-in; null = nothing to remember (no content, or a 'grid' page at its top: it reopens
+  // at its top in either orientation)
+export function scrollTopForRatio(ratio, { clientHeight, scrollHeight })  // the remembered ratio back to a scrollTop
+export function scrollTopAfterRelayout({ fit, sameWidth, sameScale, prevTop, top, scrollTop, ratio, clientHeight, scrollHeight })
+  // 1.0.5: main.js relayout's scroll decision (same width + scale: keep the paper still; 'grid' at its top: 0; else ratio)
 export function svgEl(tag, attrs)  // createElementNS helper
-// day-view.js / week-view.js / month-view.js each export:
-export function render({ pageEl, gridEl, eventsEl, stickyEl, layout, date, range, events, settings, now, onEventTap, onDayTap })
+// day-view.js / week-view.js / month-view.js / year-view.js each export:
+export function render({ pageEl, gridEl, eventsEl, stickyEl, layout, date, range, events, settings, now, onEventTap, onDayTap, onMonthTap })
+  // onMonthTap(firstOfMonth): 1.0.5, used by the year page's month names (main.js opens that month's page).
   // layout = return value of applyPageScale. stickyEl = the static div.sticky-header from index.html (F1 replaces its
   // children each render and sets its padding-left/width so its columns align with the page: use layout.offsetX/cssW and
   // the same % geometry). May be called again with new events only — must be idempotent (clear and redraw).
@@ -486,11 +549,11 @@ export function render({ pageEl, gridEl, eventsEl, stickyEl, layout, date, range
   //   (set CSS var --s = scale on pageEl; use calc()); plus, for day/week when today is shown, the current-time
   //   red line in an svg.now-layer overlay (page viewBox, pointer-events:none) appended after the boxes so it is
   //   drawn above them; after midnight the view re-renders itself so today follows the clock.
-  // render keeps the page's on-screen position when the sticky header height changes (fit width: the viewport's
+  // render keeps the page's on-screen position when the sticky header height changes (fit width and grid: the viewport's
   //   scrollTop compensates, keepPageInPlace; showBanner/hideBanner do the same). main.js does NOT compensate again.
   // stickyEl (above the scroller, not inkable): day/week → weekday + date headers aligned to columns, holiday
   //   names, and ALL all-day events (tappable; no 「他n件」; only an extreme stack, over ~34vh, scrolls inside the
-  //   header); month → weekday labels row (月…日).
+  //   header); month → weekday labels row (月…日); year → month names (see below).
   //   Tapping a date header → onDayTap(date). Month cells: date number at top-left (red Sun/holiday, blue Sat),
   //   holiday name; tapping the date number → onDayTap(date). Month all-day events: bars spanning their days within each
   //   week row (allDayRowsForRange), ALL shown, each row's bars right after its 7 cells in the DOM (aria-label with dates).
@@ -498,7 +561,24 @@ export function render({ pageEl, gridEl, eventsEl, stickyEl, layout, date, range
   //   no minimum size, never past the cell bottom; the other days of the week keep full-size bars). A thinned bar under
   //   ~16px on screen ('is-thin') opens the day view of the day under the finger/mouse tap; Enter/Space open the event;
   //   Pencil taps are ignored. Timed events below the lanes, up to what fits, then '+n件' (timed events only).
+  //   Month memo area (1.0.5): below the grid (y ≥ gridH) a separator line, a small 「メモ」 label and faint rules
+  //   every 50 lu; no events there. Vertical grid lines stop at gridH.
+  // year (1.0.5, year-view.js): SVG grid — hairlines between days, stronger lines between months, day numbers
+  //   1..31 in the gutter (today's in the accent color); Saturday cells pale blue, Sunday/holiday cells pale red,
+  //   today pale accent + outline, cells of dates that do not exist (2/30, 4/31…) hatched. Each cell: its weekday
+  //   letter (月火水…, red/blue) small at the top-left — a finger tap on it → onDayTap(date) —, the holiday name tiny
+  //   along its bottom, and ALL its all-day events as tiny one-line chips in the right ~55 % of the cell
+  //   (YEAR_CHIP_LEFT 0.45; the left part stays free for handwriting). Lanes per month column via
+  //   allDayRowsForRange and thinned like the month lanes (a thinned chip under ~16 px → a finger tap opens its
+  //   day; Enter/Space open the event); a multi-day event appears on every day it covers (cont-top / cont-bottom,
+  //   link-down color band within the month column). Finger tap on a chip → onEventTap(ev). Timed events are not
+  //   shown. stickyEl: '1月'…'12月' aligned to the 12 columns (after the gutter), each a button → onMonthTap(1st of
+  //   that month), the current month highlighted. After midnight the today marks move.
 export function initialScrollMinutes({ date, now })   // day/week: minutes to scroll to on first show (now-60 if today else 7:00)
+// year-view.js only:
+export function initialScrollY({ date, now, range })  // logical y of the first show: today's row minus 2 rows when today
+                                                      // is in that year, else 0. main.js uses a view's initialScrollY when
+                                                      // exported, else initialScrollMinutes (day/week), else 0 (month).
 ```
 
 ### F2. App shell
@@ -506,8 +586,10 @@ export function initialScrollMinutes({ date, now })   // day/week: minutes to sc
   manifest link, apple-touch-icon, `<div id="app">` with header, sticky header, viewport, toolbar, dialog root.
 - main.js: composition (auth → http → calendar/drive → sources → ink store → surface → views → UI), routing
   (`view`/`date` kept in settings and restored after the OAuth redirect), event loading per range (cache in memory
-  per pageId; re-fetch on navigation, on focus, and every 5 min while visible), sync status, banners,
-  welcome screen (Googleでログイン / お試しモード), keyboard shortcuts on desktop (←/→/t/d/w/m, ⌘Z/⇧⌘Z).
+  per pageId; re-fetch on navigation, on focus, and every 5 min while visible — the year page only every 15 min,
+  state.js periodicRefreshDue — and the year page keeps only its all-day events in the cache and the offline copy,
+  state.js eventsKeptForView), sync status, banners,
+  welcome screen (Googleでログイン / お試しモード), keyboard shortcuts on desktop (←/→/t/d/w/m/y, ⌘Z/⇧⌘Z).
 - ui/event-dialog.js: `openEventDialog({ mode, initial, calendarId, calendars, snapshotUrl, showEraseOption, eraseDefault, recurring, htmlLink, onSubmit? })`
   → `Promise<{ action: 'save', input, calendarId, eraseInk } | { action: 'delete' } | { action: 'cancel', pending?: true }>`
   onSubmit(result): the sheet stays open (「保存中…」) while it runs and shows its error inline. After ~15 s of a pending
@@ -603,7 +685,9 @@ Google documents it as legacy; keep it isolated in auth.js so it can be swapped 
   (i.e. when the active tool consumes the finger) so fingers draw instead of scroll.
 - Ink from Pointer Events only. Accept: 'pen' always; 'mouse' (button 0) always; 'touch' only when allowFinger.
   With allowFinger on, a second finger on the page cancels the finger stroke and the fingers scroll the viewport
-  manually (native panning is already blocked for that touch sequence).
+  manually (native panning is already blocked for that touch sequence) — also when both fingers land in the same
+  touchstart (no dot is left, so the two-finger tap → eraser works). The manual scroll starts only after the fingers'
+  centroid moved 12 px (= the two-finger tap's maxMove), so a tap's wobble scrolls nothing.
   One active pointer at a time; setPointerCapture on pointerdown; e.preventDefault() on pen pointerdown (blocks compat mouse events).
 - pressure: pen → e.pressure (if 0 while buttons>0 use 0.5); touch/mouse → 0.5 constant (iPad fingers report 0).
 - Hover: pen pointermove with buttons===0 is hover (pointerId differs from contact) — ignore for drawing (optional cursor).
@@ -613,7 +697,8 @@ Google documents it as legacy; keep it isolated in auth.js so it can be swapped 
 - Also listen to lostpointercapture as an end signal (guard against double finish). Block 'contextmenu' and 'selectstart' on pageEl.
 - Safari pinch: preventDefault on document 'gesturestart'/'gesturechange'/'gestureend'.
 - Rendering: live canvas: once per requestAnimationFrame, clear the area the previous frame drew and redraw the whole
-  partial stroke (plus predicted samples) with drawLiveStroke, which is the same outline as the committed stroke. While a
+  partial stroke (InkStabilizer.preview(), plus predicted samples) with drawLiveStroke, which is the same outline as
+  the committed stroke. While a
   highlighter is being drawn, or a selection containing one is being moved, the live canvas has mix-blend-mode:multiply.
   On end: clear live, draw the finished stroke on base with drawStroke (outline fill).
 - A Pencil tap on a calendar event in pen/highlighter mode just inks (paper-like). In 予定 tool mode a Pencil tap is
@@ -643,8 +728,9 @@ Layout (CSS grid, full height `100dvh`):
 ```
 
 Header (ui/header.js): `createHeader(el, handlers) → { update(state) }`
-- Left: ◀ (前へ), 「今日」, ▶ (次へ). Title: day → formatDateJa (+ holiday name), week → formatWeekRangeJa, month → formatMonthJa.
-- Center/right: segmented control 「日」「週」「月」; 「＋予定」 button; sync indicator (icon + short text:
+- Left: ◀ (前へ), 「今日」, ▶ (次へ). Title: day → formatDateJa (+ holiday name), week → formatWeekRangeJa, month → formatMonthJa,
+  year → '2026年'.
+- Center/right: segmented control 「日」「週」「月」「年」 (aria-label 年表示; 36px buttons in portrait ≤ 834px); 「＋予定」 button; sync indicator (icon + short text:
   「保存済み」「保存中…」「未送信」「オフライン」「この端末のみ」「エラー」); account/auth chip (「ログイン」 or 「再接続」 when needed);
   ⚙︎ settings.
 - handlers: onPrev, onNext, onToday, onView(view), onAddEvent, onSettings, onSyncTap, onAuthTap.
@@ -674,7 +760,8 @@ Event dialog (ui/event-dialog.js): see §4 F2 signature. Layout: sheet/modal cen
 
 Settings (ui/settings.js): `openSettings({ settings, calendars, auth: { signedIn, email, configured, demo }, version }) → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes' }>`
 - Sections: 「Googleアカウント」(status, email, ログイン/ログアウト, お試しモード切替), 「表示するカレンダー」(checkbox list with color dots),
-  「予定の登録先」(select writable), 「入力」(指・マウスでも書く toggle), 「予定にした手書きを消す（初期値）」toggle,
+  「予定の登録先」(select writable), 「入力」(指・マウスでも書く toggle; note 「2本指でトンと叩くと、ペンと消しゴムが切り替わります」),
+  「予定にした手書きを消す（初期値）」toggle,
   「データについて」(text: 手書きは Google ドライブの「アプリ専用の非表示フォルダ」に保存されます。…), バージョン.
 
 Toast (ui/toast.js): `toast(message, { actionLabel, onAction, duration = 3000, kind, onClose })` (duration ≤ 0 → sticky with ×;
@@ -699,7 +786,9 @@ main.js responsibilities (composition root):
    visible again.
 3. Build http/calendarApi/driveApi when configured & signed in; source = demo ? createDemoCalendarSource : createGoogleCalendarSource.
 4. inkStore = createInkStore({ kv, drive: (signedIn && hasScope(appdata) && !demo) ? driveApi : null, deviceId, ... }).
-5. Render current view: compute range/pageId, create page DOM (view-common), applyPageScale, view.render(...),
+5. Render current view: compute range/pageId, set #app[data-fit] = spec.fit (styles/app.css gives fit 'grid'/'contain'
+   pages a toolbar strip below the viewport, so the month grid is never under the toolbar), create page DOM
+   (view-common), applyPageScale, view.render(...),
    surface.setDoc(await inkStore.load(pageId)), then inkStore.refresh(pageId) (merge remote; surface.setDoc(merged, {resetHistory:false})),
    then carryLegacyInk (week/month pages: ink of the old Sunday-start pages, see §4 B legacy-week-start.js).
    Fetch events for range (cache by pageId; show cached immediately), re-render events only (not the ink) when they arrive.
@@ -710,14 +799,27 @@ main.js responsibilities (composition root):
    onEventPreview → page-geometry.snapEventRect; onEventRect → open dialog (create) or edit if tapping an existing event.
 7. Convert-to-event (selection menu 「予定にする」): rect = selection bbox → rectToEventRange → dialog with snapshot → on save:
    source.createEvent → if eraseInk surface.removeStrokesById(ids) → refetch events → toast 「予定を登録しました」.
-8. Resize/orientation: ResizeObserver on viewport → applyPageScale + surface.resize() + re-render events (keep scroll ratio).
+8. Resize/orientation: ResizeObserver on viewport → applyPageScale + surface.resize() + re-render events (keep scroll ratio;
+   a month page at the top stays at the top, also when a banner appears). pageScrolls(spec) = fit 'width' or 'grid': those
+   pages get scroll memory per pageId, the OAuth returnState scroll (a month page left at its very top remembers nothing
+   and carries none, so it reopens at its top in either orientation) and the first-show scroll (view initialScrollY → year: today's row; day/week:
+   initialScrollMinutes; month: the top of the grid). 「今日」 on a page that already shows today scrolls back to it.
 9. Lifecycle: visibilitychange hidden / pagehide → surface.commitActiveGesture() + inkStore.flush(); visible → refresh
    page + events, flush, maybe silent re-auth. 'online' → inkStore.flush(). Every 5 min while visible: events refresh
-   and flush of unsent ink.
+   (the year page: every third time) and flush of unsent ink.
    Sign-out (confirm: it logs out every device): flush first; everything uploaded → remove page:/own:/seen:/events:/
    legacyWeekStart:/dirty/inkAccount/eventsIndex; unsent ink → confirm, keep it for the SAME account.
 10. Navigation swipe: horizontal finger swipe (|dx| > 80px, |dx| > 2|dy|, < 600ms) on the viewport → prev/next.
-11. Keyboard (desktop): ←/→ prev/next, t today, d/w/m views, ⌘Z/Ctrl+Z undo, ⇧⌘Z/Ctrl+Y redo, p/h/e/l/v tools, Escape clears selection.
+    Year page: tapping a month name opens that month (onMonthTap), a weekday letter / thin chip opens that day.
+10b. Two-finger tap (1.0.5) → pen ⇄ eraser. Apple Pencil double-tap / squeeze (UIPencilInteraction) never reaches a web
+    page, so this replaces it. js/ui/gestures.js (pure): exactly 2 finger touches starting from none down, no stylus,
+    first touch → last lift ≤ 350 ms, each finger moves < 12 px, the viewport does not scroll. main.js feeds it from
+    passive capture touch listeners on the viewport (nothing is prevented: scrolling, the swipe and the pinch block are
+    unchanged) and decides in setTimeout(0) after the last touchend: blocked while a pen/mouse contact is down, a
+    dialog / settings / welcome is open, while leaving or on a stale tab; with 指・マウスでも書く also when a finger
+    contact is still down or ink was committed since the gesture began. The switch is selectTool (like a toolbar tap)
+    plus a 1 s toast 「消しゴム」/「ペン」/「マーカー」; the eraser goes back to settings.lastInkTool.
+11. Keyboard (desktop): ←/→ prev/next, t today, d/w/m/y views, ⌘Z/Ctrl+Z undo, ⇧⌘Z/Ctrl+Y redo, p/h/e/l/v tools, Escape clears selection.
 12. Service worker registration (only on https or localhost), update toast 「新しいバージョンがあります」→ reload.
 13. navigator.storage.persist() when standalone.
 14. Errors: never crash the app; show toast with Japanese message; console.warn details (no tokens).

@@ -28,12 +28,17 @@ import {
   initialScrollFor,
   keepNowLineCurrent,
   keepPageInPlace,
+  MEMO_PEEK_PX,
   monthCellMetrics,
   normalizeHex,
+  pageFitOf,
   pct,
   readableTextColor,
   rectStyle,
   sanitizeEvents,
+  scrollMemoryRatio,
+  scrollTopAfterRelayout,
+  scrollTopForRatio,
   stopNowTicker,
   svgEl,
   timedBoxRect,
@@ -236,21 +241,55 @@ test('computePageScale: width fit uses the client width, contain fits both and c
   assert.ok(Math.abs(week.cssH - 1920 * (820 / 1400)) < 1e-9);
   assert.equal(week.offsetX, 0);
 
-  const month = computePageScale({ clientWidth: 1180, clientHeight: 700, spec: PAGE_SPECS.month });
+  const contain = { W: 1400, H: 1050, fit: 'contain' };
+  const month = computePageScale({ clientWidth: 1180, clientHeight: 700, spec: contain });
   assert.equal(month.scale, 700 / 1050);
   assert.ok(Math.abs(month.cssH - 700) < 1e-9);
   assert.equal(month.offsetX, Math.floor((1180 - 1400 * (700 / 1050)) / 2));
 
-  const narrow = computePageScale({ clientWidth: 700, clientHeight: 2000, spec: PAGE_SPECS.month });
+  const narrow = computePageScale({ clientWidth: 700, clientHeight: 2000, spec: contain });
   assert.equal(narrow.scale, 0.5);
   assert.equal(narrow.offsetX, 0);
+
+  const year = computePageScale({ clientWidth: 820, clientHeight: 900, spec: PAGE_SPECS.year });
+  assert.equal(year.scale, 820 / 1400);
+  assert.ok(Math.abs(year.cssH - 1860 * (820 / 1400)) < 1e-9);
+  assert.equal(year.offsetX, 0);
+});
+
+test('computePageScale fit \'grid\' (month): the whole grid fits, the memo area peeks in below, centered', () => {
+  const spec = PAGE_SPECS.month;
+  assert.equal(MEMO_PEEK_PX, 28);
+  // landscape iPad 11": the height decides
+  const land = computePageScale({ clientWidth: 1180, clientHeight: 700, spec });
+  assert.equal(land.scale, (700 - 28) / 1050);
+  assert.ok(Math.abs(spec.gridH * land.scale + MEMO_PEEK_PX - 700) < 1e-9, 'grid + peek = the viewport height');
+  assert.ok(Math.abs(land.cssW - 1400 * land.scale) < 1e-9);
+  assert.ok(Math.abs(land.cssH - 1750 * land.scale) < 1e-9, 'the page is taller than the viewport: it scrolls');
+  assert.ok(land.cssH > 700);
+  assert.equal(land.offsetX, Math.floor((1180 - land.cssW) / 2));
+  // portrait iPad 11": the width decides; the memo area shows more than the peek
+  const port = computePageScale({ clientWidth: 820, clientHeight: 1000, spec });
+  assert.equal(port.scale, 820 / 1400);
+  assert.equal(port.offsetX, 0);
+  assert.ok(spec.gridH * port.scale + MEMO_PEEK_PX <= 1000);
+  // exactly balanced
+  const both = computePageScale({ clientWidth: 1400, clientHeight: 1078, spec });
+  assert.equal(both.scale, 1);
+  assert.equal(both.offsetX, 0);
+  // an unlaid-out or tiny height uses the width only; nothing → fallback width
+  assert.equal(computePageScale({ clientWidth: 700, clientHeight: 0, spec }).scale, 0.5);
+  assert.equal(computePageScale({ clientWidth: 700, clientHeight: 20, spec }).scale, 0.5);
+  assert.equal(computePageScale({ clientWidth: 0, clientHeight: 0, spec, fallbackWidth: 700 }).scale, 0.5);
+  // a 'grid' spec without gridH fits its whole height
+  assert.equal(computePageScale({ clientWidth: 2000, clientHeight: 528, spec: { W: 1000, H: 500, fit: 'grid' } }).scale, 1);
 });
 
 test('computePageScale: zero / bad sizes never produce a zero scale', () => {
   assert.equal(computePageScale({ clientWidth: 0, clientHeight: 0, spec: PAGE_SPECS.day }).scale, 1);
   assert.equal(computePageScale({ clientWidth: 0, spec: PAGE_SPECS.day, fallbackWidth: 500 }).scale, 0.5);
   // contain with an unlaid-out height uses the width only
-  assert.equal(computePageScale({ clientWidth: 700, clientHeight: 0, spec: PAGE_SPECS.month }).scale, 0.5);
+  assert.equal(computePageScale({ clientWidth: 700, clientHeight: 0, spec: { W: 1400, H: 1050, fit: 'contain' } }).scale, 0.5);
   assert.equal(computePageScale({ clientWidth: NaN, clientHeight: 'x', spec: null }).scale, 1);
 });
 
@@ -460,12 +499,29 @@ test('applyPageScale sizes the page and sets --s / centering margin', () => with
   assert.equal(pageEl.style.height, `${res.cssH}px`);
   assert.equal(pageEl.style.getPropertyValue('--s'), String(res.scale));
   assert.equal(pageEl.style.marginLeft, `${res.offsetX}px`);
-  assert.equal(pageEl.dataset.fit, 'contain');
+  assert.ok(res.offsetX > 0);
+  assert.equal(pageEl.dataset.fit, 'grid');
+  assert.deepEqual(res, computePageScale({ clientWidth: 1180, clientHeight: 700, spec: PAGE_SPECS.month }));
 
   const week = applyPageScale({ viewportEl, pageEl, spec: PAGE_SPECS.week });
   assert.equal(week.cssW, 1180);
   assert.equal(pageEl.style.marginLeft, '');
+  assert.equal(pageEl.dataset.fit, 'width');
+
+  applyPageScale({ viewportEl, pageEl, spec: PAGE_SPECS.year });
+  assert.equal(pageEl.dataset.fit, 'width');
+  applyPageScale({ viewportEl, pageEl, spec: { W: 1400, H: 1050, fit: 'contain' } });
+  assert.equal(pageEl.dataset.fit, 'contain');
 }));
+
+test('pageFitOf: the spec\'s fit, anything unknown counts as width', () => {
+  assert.equal(pageFitOf(PAGE_SPECS.month), 'grid');
+  assert.equal(pageFitOf(PAGE_SPECS.day), 'width');
+  assert.equal(pageFitOf(PAGE_SPECS.year), 'width');
+  assert.equal(pageFitOf({ fit: 'contain' }), 'contain');
+  assert.equal(pageFitOf({ fit: 'bogus' }), 'width');
+  assert.equal(pageFitOf(null), 'width');
+});
 
 test('svgEl sets attributes and skips empty values', () => withDom(() => {
   const el = svgEl('rect', { x: 1, y: 0, hidden: false, fill: null, class: 'a' });
@@ -665,7 +721,7 @@ test('day render: memo area, timeline events, date header and all-day toggle', (
 // ---------------------------------------------------------------------------------------------
 // The paper never moves under the Pencil when the sticky header changes height
 
-test('keepPageInPlace: scrolls by the header delta on width pages, leaves contain pages alone', () => {
+test('keepPageInPlace: scrolls by the header delta on width/grid pages, leaves contain pages alone', () => {
   let header = 50;
   const vp = { scrollTop: 100 };
   const pageEl = { parentNode: vp, getBoundingClientRect: () => ({ top: header - vp.scrollTop }) };
@@ -678,10 +734,31 @@ test('keepPageInPlace: scrolls by the header delta on width pages, leaves contai
   vp.scrollTop = 20;
   keepPageInPlace(pageEl, 'width', () => { header = 0; });
   assert.equal(vp.scrollTop, 0);
-  // month (contain) does not scroll: untouched
+  // contain pages do not scroll: untouched
   header = 50;
   keepPageInPlace(pageEl, 'contain', () => { header = 120; });
   assert.equal(vp.scrollTop, 0);
+  // month (fit 'grid') scrolls down to its memo area: compensated like width pages
+  header = 50;
+  vp.scrollTop = 200;
+  keepPageInPlace(pageEl, 'grid', () => { header = 80; });
+  assert.equal(vp.scrollTop, 230);
+  // … but a month page at its very top stays there (the whole grid fits the screen; a banner must not
+  // scroll the first week under the header)
+  header = 50;
+  vp.scrollTop = 0;
+  keepPageInPlace(pageEl, 'grid', () => { header = 90; });
+  assert.equal(vp.scrollTop, 0);
+  keepPageInPlace(pageEl, 'grid', () => { header = 50; });
+  assert.equal(vp.scrollTop, 0);
+  vp.scrollTop = 1; // one pixel down is not the top: compensated
+  keepPageInPlace(pageEl, 'grid', () => { header = 90; });
+  assert.equal(vp.scrollTop, 41);
+  // width pages at the top are still compensated (the paper under the Pencil does not move)
+  header = 50;
+  vp.scrollTop = 0;
+  keepPageInPlace(pageEl, 'width', () => { header = 90; });
+  assert.equal(vp.scrollTop, 40);
   // still compensates when the render step throws
   header = 50;
   vp.scrollTop = 100;
@@ -690,6 +767,73 @@ test('keepPageInPlace: scrolls by the header delta on width pages, leaves contai
   // nothing to measure: just runs fn
   assert.equal(keepPageInPlace({}, 'width', () => 7), 7);
   assert.equal(keepPageInPlace(null, 'width', () => 8), 8);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Scroll memory and relayout (main.js): a month page at its top stays at its top
+
+/** The month page's viewport metrics on an iPad viewport (client size of .viewport) at scrollTop. */
+function monthViewport(clientWidth, clientHeight, scrollTop = 0) {
+  const { cssH, scale } = computePageScale({ clientWidth, clientHeight, spec: PAGE_SPECS.month });
+  return { clientWidth, clientHeight, scrollHeight: Math.max(cssH, clientHeight), scrollTop, scale };
+}
+
+test('scrollMemoryRatio: a month page left at its top is not remembered (it reopens at the top in either orientation)', () => {
+  const portrait = monthViewport(820, 1004); // iPad Air 11": the month page barely scrolls
+  const landscape = monthViewport(1180, 644);
+  assert.ok(portrait.scrollHeight > portrait.clientHeight && landscape.scrollHeight - landscape.clientHeight > 300);
+  // The centre ratio of the top in portrait (≈ 0.49) would put the landscape page ~180 px down (1.8 week rows hidden).
+  const naive = (portrait.scrollTop + portrait.clientHeight / 2) / portrait.scrollHeight;
+  assert.ok(scrollTopForRatio(naive, landscape) > 150, 'why the top is not kept as a ratio');
+  assert.equal(scrollMemoryRatio('grid', portrait), null, 'portrait, at the top');
+  assert.equal(scrollMemoryRatio('grid', landscape), null, 'landscape, at the top');
+  assert.equal(scrollMemoryRatio('grid', { ...landscape, scrollTop: -3 }), null, 'rubber-band overscroll is the top too');
+  // scrolled down to the memo area: remembered, and restored in the other orientation
+  const memo = { ...landscape, scrollTop: landscape.scrollHeight - landscape.clientHeight };
+  const r = scrollMemoryRatio('grid', memo);
+  assert.equal(r, (memo.scrollTop + memo.clientHeight / 2) / memo.scrollHeight);
+  assert.equal(scrollTopForRatio(r, landscape), memo.scrollTop);
+  assert.equal(scrollTopForRatio(r, portrait), portrait.scrollHeight - portrait.clientHeight, 'clamped to the bottom');
+  // day / week / year pages (fit 'width') keep their centre ratio even at the top (00:00 / January 1–9)
+  assert.equal(scrollMemoryRatio('width', { scrollTop: 0, clientHeight: 800, scrollHeight: 3200 }), 0.125);
+  assert.equal(scrollMemoryRatio('width', { scrollTop: 400, clientHeight: 800, scrollHeight: 3200 }), 0.25);
+  // nothing laid out: nothing to remember
+  for (const vp of [{ scrollTop: 0, clientHeight: 0, scrollHeight: 0 }, {}, null, undefined]) {
+    assert.equal(scrollMemoryRatio('width', vp), null);
+  }
+  assert.equal(scrollTopForRatio(0.5, { clientHeight: 800, scrollHeight: 600 }), 0, 'content shorter than the viewport');
+});
+
+test('scrollTopAfterRelayout: a banner on a month page at its top leaves the whole grid in view', () => {
+  // showBanner → keepPageInPlace (no compensation for a grid page at its top) → ResizeObserver → relayout.
+  for (const [w, h] of [[820, 1180], [744, 1133], [1032, 1376], [1180, 820], [1133, 744], [1376, 1032]]) {
+    const tag = `${w}×${h}`;
+    let header = 52; // banner row + app header above the viewport
+    const vp = { scrollTop: 0 };
+    const pageEl = { parentNode: vp, getBoundingClientRect: () => ({ top: header - vp.scrollTop }) };
+    const before = monthViewport(w, h);
+    keepPageInPlace(pageEl, 'grid', () => { header += 44; });
+    assert.equal(vp.scrollTop, 0, `${tag}: the banner does not scroll the page`);
+    const after = monthViewport(w, h - 44);
+    const y = scrollTopAfterRelayout({
+      // prevTop = S.lastTop, recorded by keepContentStill right after the banner showed
+      fit: 'grid', sameWidth: true, sameScale: after.scale === before.scale, prevTop: header, top: header,
+      scrollTop: vp.scrollTop, ratio: (vp.scrollTop + before.clientHeight / 2) / before.scrollHeight,
+      clientHeight: after.clientHeight, scrollHeight: after.scrollHeight,
+    });
+    assert.equal(y, 0, `${tag}: still at the top after relayout`);
+    // the first week row is fully below the viewport's top edge, the whole grid fits the shorter viewport
+    assert.ok(PAGE_SPECS.month.gridH * after.scale <= after.clientHeight + 1e-9, `${tag}: grid fits`);
+  }
+  // width pages keep the paper still on screen (the viewport's top moved by the banner height)
+  assert.equal(scrollTopAfterRelayout({ fit: 'width', sameWidth: true, sameScale: true, prevTop: 52, top: 96, scrollTop: 300, ratio: 0.3, clientHeight: 700, scrollHeight: 3000 }), 344);
+  // a month page that was scrolled down keeps the paper still too, and the top-of-grid rule needs scrollTop ≤ 0
+  assert.equal(scrollTopAfterRelayout({ fit: 'grid', sameWidth: true, sameScale: true, prevTop: 52, top: 52, scrollTop: 120, ratio: 0.6, clientHeight: 600, scrollHeight: 1000 }), 120);
+  // rotation: the grid page at its top stays at the top; otherwise the centre ratio comes back
+  assert.equal(scrollTopAfterRelayout({ fit: 'grid', sameWidth: false, sameScale: false, prevTop: 52, top: 52, scrollTop: 0, ratio: 0.49, clientHeight: 644, scrollHeight: 1027 }), 0);
+  assert.equal(scrollTopAfterRelayout({ fit: 'width', sameWidth: false, sameScale: false, prevTop: 52, top: 52, scrollTop: 0, ratio: 0.5, clientHeight: 600, scrollHeight: 3000 }), 1200);
+  assert.equal(scrollTopAfterRelayout({ fit: 'width', sameWidth: false, sameScale: false, scrollTop: 10, ratio: null, clientHeight: 600, scrollHeight: 3000 }), null, 'nothing to restore');
+  assert.equal(scrollTopAfterRelayout({ fit: 'grid', sameWidth: true, sameScale: false, prevTop: NaN, top: 52, scrollTop: 30, ratio: 0.5, clientHeight: 600, scrollHeight: 1000 }), 200);
 });
 
 /**
@@ -867,7 +1011,7 @@ test('month render: 42 cells, chips fit the top of the cell, +n件, taps', () =>
 
   const cells = m.eventsEl.findAll('mc');
   assert.equal(cells.length, 42);
-  assert.equal(m.gridEl.getAttribute('viewBox'), '0 0 1400 1050');
+  assert.equal(m.gridEl.getAttribute('viewBox'), '0 0 1400 1750');
   assert.equal(m.gridEl.findAll('g-today').length, 1);
   assert.equal(m.gridEl.findAll('g-now').length, 0);
   assert.equal(m.eventsEl.findAll('g-now').length, 0);
@@ -919,13 +1063,77 @@ test('month render: 42 cells, chips fit the top of the cell, +n件, taps', () =>
   assert.ok(monLabels[6].className.includes('is-red'));
 }));
 
-// Month bar geometry in logical units (lu) of the 1400×1050 page.
+test('month render: a memo area below the grid — separator, 「メモ」 label, ruled lines, no overlays', () => withDom((doc) => {
+  const spec = PAGE_SPECS.month;
+  const m = mountPage(doc, 'month', spec, 1180, 700); // landscape: the grid fills the height, the memo peeks in
+  const date = at(2026, 10, 1);
+  const range = rangeFor('month', date, 1);
+  const events = [
+    ev(at(2026, 11, 2), at(2026, 11, 9), { allDay: true, title: '最終週の旅行' }), // the grid's last row
+    ...Array.from({ length: 12 }, (_, i) => ev(at(2026, 11, 8, 8 + i), at(2026, 11, 8, 9 + i))),
+  ];
+  monthView.render({ ...m, date, range, events, settings: { weekStart: 1 }, now: at(2026, 10, 4, 10) });
+
+  assert.equal(m.pageEl.dataset.fit, 'grid');
+  assert.ok(Math.abs(spec.gridH * m.layout.scale + 28 - 700) < 1e-9, 'the grid fits the viewport, the memo area peeks in');
+  // grid lines stop at the grid; a stronger line separates the memo area
+  const vline = m.gridEl.findAll('g-vline')[0].getAttribute('d');
+  assert.ok(vline.includes('V1050') && !vline.includes('V1750'));
+  const sep = m.gridEl.findAll('g-sep').map((p) => p.getAttribute('d'));
+  assert.deepEqual(sep, ['M0 1050H1400']);
+  // faint ruled lines every 50 lu below the grid, inset from the page edges
+  const rules = m.gridEl.findAll('g-rule')[0].getAttribute('d');
+  const ys = [...rules.matchAll(/M(\d+(?:\.\d+)?) (\d+(?:\.\d+)?)H(\d+(?:\.\d+)?)/g)].map((x) => Number(x[2]));
+  assert.equal(ys.length, (1750 - 1050) / 50 - 1);
+  assert.deepEqual(ys, Array.from({ length: ys.length }, (_, i) => 1100 + i * 50));
+  assert.match(rules, /^M20 1100H1380/);
+  // the 「メモ」 label at the memo area's top-left
+  const label = m.gridEl.findAll('g-memo-label')[0];
+  assert.equal(label.textContent, 'メモ');
+  assert.equal(Number(label.getAttribute('x')), 20);
+  assert.ok(Number(label.getAttribute('y')) > 1050 && Number(label.getAttribute('y')) < 1100);
+  assert.ok(Number(label.getAttribute('font-size')) > 0);
+
+  // every overlay (cells, chips, bars) stays on the grid: the memo area is free paper for handwriting
+  const gridPct = pct(spec.gridH, spec.H); // 60%
+  for (const el of m.eventsEl.childNodes) {
+    const top = parseFloat(el.style.top);
+    const height = parseFloat(el.style.height);
+    assert.ok(top + height <= gridPct + 1e-3, `${el.className} ends above the memo area (${top + height}%)`);
+  }
+  const cells = m.eventsEl.findAll('mc');
+  assert.ok(Math.abs(parseFloat(cells[41].style.top) + parseFloat(cells[41].style.height) - gridPct) < 1e-3);
+  assert.ok(Math.abs(parseFloat(cells[0].style.height) - pct(175, 1750)) < 1e-6, 'cells stay 175 lu tall');
+  const bar = m.eventsEl.findAll('mc-bar')[0];
+  assert.ok(barBox(bar).bottom <= spec.gridH - 2 + 1e-3);
+  // tints only on grid cells
+  for (const r of m.gridEl.findTag('rect')) assert.ok(Number(r.getAttribute('y')) + Number(r.getAttribute('height')) <= 1050);
+}));
+
+test('month render: the page scrolls now, so a taller sticky header does not move it under the Pencil', () => withDom((doc) => {
+  const m = mountPage(doc, 'month', PAGE_SPECS.month, 1180, 700);
+  let headerH = 30;
+  const pageTop = simulateStickyLayout(m, () => headerH);
+  const date = at(2026, 10, 1);
+  const base = { ...m, date, range: rangeFor('month', date, 1), events: [], settings: { weekStart: 1 }, now: at(2026, 10, 4) };
+  monthView.render(base);
+  m.viewportEl.scrollTop = 250; // scrolled down to the memo area
+  const top0 = pageTop();
+  const orig = m.stickyEl.replaceChildren.bind(m.stickyEl);
+  m.stickyEl.replaceChildren = (...kids) => { headerH = 44; return orig(...kids); };
+  monthView.render(base);
+  assert.equal(m.viewportEl.scrollTop, 264);
+  assert.equal(pageTop(), top0);
+}));
+
+// Month bar geometry in logical units (lu) of the 1400×1750 page (grid 1400×1050 + memo area).
 function barBox(b) {
-  const top = parseFloat(b.style.top) / 100 * 1050;
-  const left = parseFloat(b.style.left) / 100 * 1400;
+  const { W, H } = PAGE_SPECS.month;
+  const top = parseFloat(b.style.top) / 100 * H;
+  const left = parseFloat(b.style.left) / 100 * W;
   return {
-    top, bottom: top + parseFloat(b.style.height) / 100 * 1050, height: parseFloat(b.style.height) / 100 * 1050,
-    left, right: left + parseFloat(b.style.width) / 100 * 1400,
+    top, bottom: top + parseFloat(b.style.height) / 100 * H, height: parseFloat(b.style.height) / 100 * H,
+    left, right: left + parseFloat(b.style.width) / 100 * W,
   };
 }
 const MONTH_CELL_H = 175;
@@ -1120,7 +1328,7 @@ test('month: a thin multi-day bar opens the day under the finger; large screens 
 
   // a large screen: the same rows are thinned but still tall on screen, so taps open the event
   withDom((doc2) => {
-    const big = mountPage(doc2, 'month', PAGE_SPECS.month, 2800, 2100); // scale 2
+    const big = mountPage(doc2, 'month', PAGE_SPECS.month, 2800, 2128); // scale 2 (grid 2100 + 28 peek)
     monthView.render({ ...params, ...big });
     const metrics = monthCellMetrics(big.layout.scale);
     const lm = monthView.allDayLaneMetrics(10, metrics);

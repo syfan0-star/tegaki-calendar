@@ -22,6 +22,8 @@ import {
   isValidYMD,
   INK_DB_NAMES,
   inkDbName,
+  VIEW_NAMES,
+  INK_TOOL_NAMES,
   decideInkAccount,
   REAUTH_IDLE_MS,
   reauthIdleMs,
@@ -33,6 +35,9 @@ import {
   encodeDraft,
   parseDraft,
   encodeEventsEntry,
+  eventsKeptForView,
+  periodicRefreshDue,
+  YEAR_REFRESH_TICKS,
   decodeEventsEntry,
   touchLru,
   offlineBannerText,
@@ -77,7 +82,7 @@ test('defaultSettings matches SPEC §2 and fills date with today', () => {
   assert.deepEqual({ ...s, hiddenCalendarIds: [...s.hiddenCalendarIds] }, {
     weekStart: 1, allowFinger: false, eraseInkAfterConvert: true, hiddenCalendarIds: [],
     defaultCalendarId: null, demo: false, tool: 'pen', penColor: '#1f2937', penSize: 'medium',
-    hlColor: '#fde047', view: 'week', date: '2026-10-04',
+    hlColor: '#fde047', lastInkTool: 'pen', view: 'week', date: '2026-10-04',
   });
   assert.ok(Object.isFrozen(s));
   assert.ok(Object.isFrozen(s.hiddenCalendarIds));
@@ -132,6 +137,43 @@ test('sanitizeSettings: weekStart is fixed to Monday (1), all tools and sizes ac
   }
   assert.equal(sanitizeSettings({ defaultCalendarId: 'me@example.com' }).defaultCalendarId, 'me@example.com');
   assert.equal(sanitizeSettings({ defaultCalendarId: '' }).defaultCalendarId, null);
+});
+
+test('views: 日 週 月 年 — the year page is a valid stored view', () => {
+  assert.deepEqual([...VIEW_NAMES], ['day', 'week', 'month', 'year']);
+  assert.equal(sanitizeSettings({ view: 'year' }).view, 'year');
+  assert.equal(sanitizeSettings({ view: 'decade' }).view, 'week');
+});
+
+test('lastInkTool: remembers the last of pen / highlighter (two-finger tap: eraser → back to it)', () => {
+  assert.deepEqual([...INK_TOOL_NAMES], ['pen', 'highlighter']);
+  assert.equal(sanitizeSettings({}).lastInkTool, 'pen');
+  assert.equal(sanitizeSettings({ tool: 'highlighter' }).lastInkTool, 'highlighter', 'derived from the tool');
+  assert.equal(sanitizeSettings({ tool: 'highlighter', lastInkTool: 'pen' }).lastInkTool, 'highlighter');
+  assert.equal(sanitizeSettings({ tool: 'eraser', lastInkTool: 'highlighter' }).lastInkTool, 'highlighter');
+  for (const junk of ['eraser', 'lasso', 'event', 'spray', 1, null]) {
+    assert.equal(sanitizeSettings({ tool: 'lasso', lastInkTool: junk }).lastInkTool, 'pen', String(junk));
+  }
+
+  const storage = memoryStorage();
+  const store = createSettingsStore({ storage, now: () => NOW });
+  store.set({ tool: 'highlighter' });
+  store.set({ tool: 'eraser' });
+  assert.equal(store.get().lastInkTool, 'highlighter');
+  store.set({ tool: 'lasso' });
+  assert.equal(store.get().lastInkTool, 'highlighter');
+  store.set({ penColor: '#2563eb', tool: 'pen' }); // a pen color tap selects the pen
+  store.set({ tool: 'eraser' });
+  assert.equal(store.get().lastInkTool, 'pen');
+  store.set({ tool: 'highlighter' });
+  store.set({ tool: 'eraser' });
+  // Survives a restart (the app reopened with the eraser still selected).
+  const reopened = createSettingsStore({ storage, now: () => NOW });
+  assert.equal(reopened.get().tool, 'eraser');
+  assert.equal(reopened.get().lastInkTool, 'highlighter');
+  // Settings saved by 1.0.4 (no lastInkTool) load fine.
+  const old = loadSettings(memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ tool: 'eraser', view: 'week' }) }), { now: NOW });
+  assert.equal(old.lastInkTool, 'pen');
 });
 
 test('sanitizeSettings tolerates garbage input', () => {
@@ -308,8 +350,21 @@ test('resolveInitialRoute: recent stored route is restored, stale one opens toda
   assert.equal(future.date.getTime(), new Date(2026, 9, 4).getTime());
 });
 
+test('resolveInitialRoute: the year page is restored (OAuth round trip and stored route)', () => {
+  const r = resolveInitialRoute({ returnState: { view: 'year', date: '2027-01-01' }, settings: { view: 'week' }, now: NOW });
+  assert.equal(r.view, 'year');
+  assert.equal(r.date.getTime(), new Date(2027, 0, 1).getTime());
+  const stored = resolveInitialRoute({ settings: { view: 'year', date: '2026-03-01' }, lastRouteAt: NOW - 1000, now: NOW });
+  assert.equal(stored.view, 'year');
+  assert.equal(stored.date.getTime(), new Date(2026, 2, 1).getTime());
+  const storage = memoryStorage();
+  const store = createSettingsStore({ storage, now: () => NOW });
+  store.set({ view: 'year', date: '2026-01-01' });
+  assert.equal(createSettingsStore({ storage, now: () => NOW }).get().view, 'year');
+});
+
 test('resolveInitialRoute: garbage falls back to week / today', () => {
-  const r = resolveInitialRoute({ returnState: { view: 'year', date: 'x' }, settings: { view: 7 }, now: NOW });
+  const r = resolveInitialRoute({ returnState: { view: 'quarter', date: 'x' }, settings: { view: 7 }, now: NOW });
   assert.equal(r.view, 'week');
   assert.equal(r.date.getTime(), new Date(2026, 9, 4).getTime());
   const r2 = resolveInitialRoute();
@@ -519,6 +574,45 @@ test('encodeEventsEntry / decodeEventsEntry round trip (structured-clone friendl
   assert.ok(dec.events[0].start instanceof Date);
   assert.equal(dec.events[0].start.getTime(), ev.start.getTime());
   assert.equal(dec.events[0].title, '会議');
+});
+
+test('eventsKeptForView: the year page caches and stores only its all-day events', () => {
+  const allDay = { id: 'h', calendarId: 'primary', allDay: true, start: new Date(2026, 9, 5), end: new Date(2026, 9, 6) };
+  const trip = { id: 't', calendarId: 'primary', allDay: true, start: new Date(2026, 9, 7), end: new Date(2026, 9, 10) };
+  const daily = [];
+  for (let d = 1; d <= 365; d++) {
+    daily.push({ id: `m${d}`, calendarId: 'work', allDay: false, start: new Date(2026, 0, d, 9), end: new Date(2026, 0, d, 9, 30) });
+  }
+  const events = [daily[0], allDay, ...daily.slice(1), trip, null, 7];
+  const kept = eventsKeptForView('year', events);
+  assert.deepEqual(kept, [allDay, trip], 'all-day events, in their order; timed ones and garbage dropped');
+  // what goes into the offline copy is just as small
+  const entry = decodeEventsEntry(JSON.parse(JSON.stringify(encodeEventsEntry({ events: kept, key: 'google|primary,work', at: NOW }))));
+  assert.equal(entry.events.length, 2);
+  assert.ok(entry.events.every((e) => e.allDay === true));
+  // every other page keeps everything (the same array)
+  for (const view of ['day', 'week', 'month']) assert.equal(eventsKeptForView(view, events), events, view);
+  assert.deepEqual(eventsKeptForView('year', null), []);
+  assert.deepEqual(eventsKeptForView('month', undefined), []);
+});
+
+test('periodicRefreshDue: every tick, except the year page (every third tick)', () => {
+  const interval = 5 * 60 * 1000;
+  assert.equal(YEAR_REFRESH_TICKS, 3);
+  for (const view of ['day', 'week', 'month']) {
+    assert.equal(periodicRefreshDue({ view, at: NOW, now: NOW + 1000, intervalMs: interval }), true, view);
+  }
+  // fetched right after a tick: skipped on the next two ticks, refreshed on the third (≈ 15 min)
+  const at = NOW + 2000;
+  const ticks = [1, 2, 3, 4].map((k) => periodicRefreshDue({ view: 'year', at, now: NOW + k * interval, intervalMs: interval }));
+  assert.deepEqual(ticks, [false, false, true, true]);
+  // fetched right before a tick: the same
+  assert.equal(periodicRefreshDue({ view: 'year', at: NOW - 2000, now: NOW + 2 * interval, intervalMs: interval }), false);
+  assert.equal(periodicRefreshDue({ view: 'year', at: NOW - 2000, now: NOW + 3 * interval, intervalMs: interval }), true);
+  // never fetched, invalidated (at 0, e.g. after an edit), or a cache from the future (clock changed): refresh
+  assert.equal(periodicRefreshDue({ view: 'year', at: 0, now: NOW, intervalMs: interval }), true);
+  assert.equal(periodicRefreshDue({ view: 'year', now: NOW, intervalMs: interval }), true);
+  assert.equal(periodicRefreshDue({ view: 'year', at: NOW + interval, now: NOW, intervalMs: interval }), true);
 });
 
 test('decodeEventsEntry tolerates garbage', () => {

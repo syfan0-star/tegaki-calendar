@@ -296,12 +296,20 @@ p {
   height: calc(var(--toolbar-space) + var(--safe-b));
 }
 
-/* Month (fit 'contain') must not hide under the toolbar: give the toolbar its own strip. */
-#app:has(.page[data-fit='contain']) > .viewport {
+/* Month (fit 'contain'; since 1.0.5 fit 'grid': the grid fills the screen, its メモ欄 is scrolled to) must not
+   hide under the toolbar: give the toolbar its own strip. main.js sets #app[data-fit] before the page is
+   measured, so the first layout already has the right height; :has() covers the page attribute too. */
+#app:has(.page[data-fit='contain']) > .viewport,
+#app:has(.page[data-fit='grid']) > .viewport,
+#app[data-fit='contain'] > .viewport,
+#app[data-fit='grid'] > .viewport {
   margin-bottom: calc(var(--toolbar-space) + var(--safe-b) - var(--toolbar-gap));
 }
 
-.viewport:has(> .page[data-fit='contain'])::after {
+.viewport:has(> .page[data-fit='contain'])::after,
+.viewport:has(> .page[data-fit='grid'])::after,
+#app[data-fit='contain'] > .viewport::after,
+#app[data-fit='grid'] > .viewport::after {
   display: none;
 }
 
@@ -959,6 +967,7 @@ p {
 @media (max-width: 834px) {
   .hdr-holiday { display: none; }
   .auth-text { display: none; }
+  .seg > button { min-width: 36px; padding: 0 8px; } /* 日 週 月 年: four buttons, the title keeps its room */
   .auth-chip { justify-content: center; width: 36px; height: 36px; padding: 0; }
   .auth-chip::after { inset: -4px; }
 }
@@ -1592,6 +1601,13 @@ p {
   color: var(--text-2);
   font-size: 13.5px;
   line-height: 1.65;
+}
+
+.settings-note {
+  margin: 8px 4px 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 .settings-version {

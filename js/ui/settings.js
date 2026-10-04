@@ -21,6 +21,7 @@ export const SETTINGS_TEXT = Object.freeze({
   input: '入力',
   allowFinger: '指・マウスでも書く',
   allowFingerHint: 'Apple Pencil がないときや、パソコンで試すときに使います。オンのときは、2本指でスクロールします',
+  twoFingerTap: '2本指でトンと叩くと、ペンと消しゴムが切り替わります',
   eraseDefault: '予定にした手書きを消す（初期値）',
   about: 'データについて',
   aboutText: [
@@ -205,7 +206,8 @@ export function openSettings(options = {}) {
       checked: draft.eraseInkAfterConvert !== false,
       onChange: (on) => { draft = { ...draft, eraseInkAfterConvert: on }; },
     });
-    const inputSection = section(SETTINGS_TEXT.input, h('div', { class: 'card-group' }, finger.row));
+    const inputSection = section(SETTINGS_TEXT.input, h('div', { class: 'card-group' }, finger.row),
+      h('p', { class: 'settings-note' }, SETTINGS_TEXT.twoFingerTap));
     const eraseSection = h('section', { class: 'settings-section', 'aria-label': SETTINGS_TEXT.eraseDefault },
       h('div', { class: 'card-group' }, erase.row));
 

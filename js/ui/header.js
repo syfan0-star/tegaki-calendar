@@ -1,11 +1,11 @@
-// App header (module F2b): ◀ 今日 ▶ · title · 日/週/月 · ＋予定 · sync indicator · account chip · ⚙︎
+// App header (module F2b): ◀ 今日 ▶ · title · 日/週/月/年 · ＋予定 · sync indicator · account chip · ⚙︎
 //
 // createHeader(el, handlers) → { update(state) }
 //   handlers: onPrev, onNext, onToday, onView(view), onAddEvent, onSettings, onSyncTap, onAuthTap
 //   update(state) merges a PARTIAL state into the current one, so callers may send only what changed:
-//     view        'day' | 'week' | 'month'
+//     view        'day' | 'week' | 'month' | 'year'
 //     date        Date (the current page date)
-//     range       { start, end, monthStart? } from rangeFor() (optional; derived from date/weekStart if absent)
+//     range       { start, end, monthStart?, yearStart? } from rangeFor() (optional; derived from date/weekStart if absent)
 //     weekStart   0 | 1 (used only when range is absent)
 //     title       string (optional override of the computed title)
 //     sync        ink-store status string ('local'|'synced'|'pending'|'syncing'|'error'|'offline')
@@ -19,8 +19,8 @@ import { h, clear, svgIcon } from './dom.js';
 import { formatDateJa, formatMonthJa, formatWeekRangeJa, startOfWeek, addDays, isValidDate } from '../util/date.js';
 import { getHolidayName } from '../util/holidays-jp.js';
 
-const VIEW_LABELS = [['day', '日'], ['week', '週'], ['month', '月']];
-const VIEW_NAMES = { day: '日', week: '週', month: '月' };
+const VIEW_LABELS = [['day', '日'], ['week', '週'], ['month', '月'], ['year', '年']];
+const VIEW_NAMES = { day: '日', week: '週', month: '月', year: '年' };
 
 /** Sync indicator per ink-store status: short text (SPEC §8), icon and tone. */
 const SYNC_INFO = {
@@ -98,11 +98,15 @@ export function authChipInfo(authInput) {
 
 /**
  * Header title for a view/date: day → '2026年10月4日(日)' (+ holiday name), week → week range,
- * month → '2026年10月'.
+ * month → '2026年10月', year → '2026年'.
  * @returns {{ title: string, holiday: string }}
  */
 export function headerTitle({ view, date, range, weekStart = 1 } = {}) {
   const d = isValidDate(date) ? date : null;
+  if (view === 'year') {
+    const y = [range?.yearStart, range?.start, d].find((v) => isValidDate(v)) || null;
+    return { title: y ? `${y.getFullYear()}年` : '', holiday: '' };
+  }
   if (view === 'month') {
     const m = isValidDate(range?.monthStart) ? range.monthStart : d;
     return { title: m ? formatMonthJa(m) : '', holiday: '' };

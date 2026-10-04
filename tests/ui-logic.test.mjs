@@ -16,6 +16,9 @@ import {
   setCalendarVisible, defaultCalendarValue, displayableCalendars, accountView, openSettings,
 } from '../js/ui/settings.js';
 import { toast, showBanner, hideBanner } from '../js/ui/toast.js';
+import {
+  TWO_FINGER_TAP, TOOL_TOAST_LABELS, twoFingerTapTool, touchPoint, touchPoints, createTwoFingerTapRecognizer,
+} from '../js/ui/gestures.js';
 import { PEN_COLORS, HIGHLIGHTER_COLORS } from '../js/ink/render.js';
 
 const d = (y, m, day, hh = 0, mm = 0) => new Date(y, m - 1, day, hh, mm, 0, 0);
@@ -276,6 +279,15 @@ test('headerTitle per view (holiday name on day pages)', () => {
   assert.equal(headerTitle().title, '');
 });
 
+test('headerTitle: year page → 2026年 (from the range, else from the date)', () => {
+  assert.deepEqual(headerTitle({ view: 'year', date: d(2026, 10, 4), range: { start: d(2026, 1, 1), end: d(2027, 1, 1), yearStart: d(2026, 1, 1) } }),
+    { title: '2026年', holiday: '' });
+  assert.equal(headerTitle({ view: 'year', date: d(2027, 3, 15) }).title, '2027年');
+  assert.equal(headerTitle({ view: 'year', date: d(2026, 1, 1), range: { start: d(2026, 1, 1) } }).title, '2026年');
+  assert.equal(headerTitle({ view: 'year', date: d(2026, 5, 5) }).holiday, '', 'no holiday badge on the year page');
+  assert.equal(headerTitle({ view: 'year' }).title, '');
+});
+
 test('syncIndicatorInfo: the six statuses use the spec texts', () => {
   const texts = Object.fromEntries(['synced', 'syncing', 'pending', 'offline', 'local', 'error']
     .map((s) => [s, syncIndicatorInfo(s).text]));
@@ -366,6 +378,162 @@ test('settings helpers', () => {
   assert.deepEqual(accountView({}).actions.map((a) => a.action), ['signIn', 'enterDemo']);
   assert.deepEqual(accountView({ configured: false }).actions.map((a) => a.action), ['enterDemo']);
   assert.match(accountView({ configured: false }).detail, /SETUP\.md/);
+});
+
+// =============================================================================================
+// Two-finger tap → pen ↔ eraser (ui/gestures.js)
+
+test('twoFingerTapTool: eraser goes back to the last ink tool, everything else to the eraser', () => {
+  assert.deepEqual(twoFingerTapTool('pen', 'pen'), { tool: 'eraser', label: '消しゴム' });
+  assert.deepEqual(twoFingerTapTool('highlighter', 'highlighter'), { tool: 'eraser', label: '消しゴム' });
+  assert.deepEqual(twoFingerTapTool('lasso', 'pen'), { tool: 'eraser', label: '消しゴム' });
+  assert.deepEqual(twoFingerTapTool('event', 'highlighter'), { tool: 'eraser', label: '消しゴム' });
+  assert.deepEqual(twoFingerTapTool('eraser', 'pen'), { tool: 'pen', label: 'ペン' });
+  assert.deepEqual(twoFingerTapTool('eraser', 'highlighter'), { tool: 'highlighter', label: 'マーカー' });
+  for (const junk of [undefined, null, 'eraser', 'lasso', 'spray']) {
+    assert.deepEqual(twoFingerTapTool('eraser', junk), { tool: 'pen', label: 'ペン' }, String(junk));
+  }
+  assert.equal(TOOL_TOAST_LABELS.eraser, '消しゴム');
+  assert.equal(TOOL_TOAST_LABELS.pen, 'ペン');
+  assert.deepEqual(TWO_FINGER_TAP, { maxMs: 350, maxMove: 12 });
+});
+
+test('touchPoints: TouchList-like → plain points (stylus flagged)', () => {
+  const t1 = { identifier: 3, clientX: 10, clientY: 20, touchType: 'direct' };
+  const t2 = { identifier: 4, clientX: 30.5, clientY: 'x', touchType: 'stylus' };
+  const listLike = { length: 2, item: (i) => [t1, t2][i] };
+  assert.deepEqual(touchPoints(listLike), [{ id: 3, x: 10, y: 20, stylus: false }, { id: 4, x: 30.5, y: 0, stylus: true }]);
+  assert.deepEqual(touchPoints([t1]), [touchPoint(t1)]);
+  assert.deepEqual(touchPoints(null), []);
+  assert.deepEqual(touchPoints(undefined), []);
+});
+
+/** Drives a recognizer like main.js does: touches = fingers still down, changed = this event's fingers. */
+function tapDriver(opts) {
+  const r = createTwoFingerTapRecognizer(opts);
+  const down = new Map();
+  const pt = (id, x, y, stylus = false) => ({ id, x, y, stylus });
+  let scroll = { top: 0, left: 0 };
+  return {
+    r,
+    setScroll(top, left = 0) { scroll = { top, left }; },
+    start(at, fingers, extra = {}) {
+      for (const f of fingers) down.set(f.id, f);
+      r.start({ touches: [...down.values()], changed: fingers, at, scroll, ...extra });
+    },
+    move(fingers) {
+      for (const f of fingers) down.set(f.id, f);
+      r.move({ touches: [...down.values()] });
+    },
+    end(at, fingers, extra = {}) {
+      for (const f of fingers) down.delete(f.id);
+      return r.end({ touches: [...down.values()], changed: fingers, at, scroll, ...extra });
+    },
+    pt,
+  };
+}
+
+test('two-finger tap: two fingers down and up quickly without moving → a tap', () => {
+  const t = tapDriver();
+  const { pt } = t;
+  t.start(1000, [pt(1, 100, 100)]);
+  t.start(1040, [pt(2, 220, 110)]);
+  assert.equal(t.r.active(), true);
+  t.move([pt(1, 104, 103)]); // a few px of jitter is fine
+  assert.equal(t.end(1150, [pt(1, 105, 103)]), null, 'one finger still down: not yet');
+  assert.deepEqual(t.end(1200, [pt(2, 221, 112)]), { startAt: 1000, endAt: 1200 });
+  assert.equal(t.r.active(), false);
+
+  // Both fingers in one touchstart / one touchend.
+  t.start(5000, [pt(7, 10, 10), pt(8, 60, 10)]);
+  assert.deepEqual(t.end(5100, [pt(7, 10, 10), pt(8, 60, 10)]), { startAt: 5000, endAt: 5100 });
+  // Exactly at the time limit still counts.
+  t.start(6000, [pt(9, 10, 10), pt(10, 60, 10)]);
+  assert.ok(t.end(6000 + TWO_FINGER_TAP.maxMs, [pt(9, 10, 10), pt(10, 60, 10)]));
+});
+
+test('two-finger tap: too slow, moved, one or three fingers, stylus → no tap', () => {
+  const { pt } = tapDriver();
+  // Too slow (both lifted after 350 ms).
+  let t = tapDriver();
+  t.start(0, [pt(1, 0, 0), pt(2, 50, 0)]);
+  assert.equal(t.end(351, [pt(1, 0, 0), pt(2, 50, 0)]), null);
+  // A finger moved more than 12 px (seen in touchmove).
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0), pt(2, 50, 0)]);
+  t.move([pt(2, 50, 12)]); // 12 px is already too far (< 12 px allowed)
+  t.move([pt(2, 50, 0)]); // moving back does not undo it
+  assert.equal(t.end(100, [pt(1, 0, 0), pt(2, 50, 0)]), null);
+  // … or only in the touchend coordinates.
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0), pt(2, 50, 0)]);
+  assert.equal(t.end(100, [pt(1, 9, 9), pt(2, 50, 0)]), null);
+  // One finger.
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0)]);
+  assert.equal(t.end(80, [pt(1, 0, 0)]), null);
+  // Three fingers.
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0), pt(2, 50, 0)]);
+  t.start(30, [pt(3, 90, 0)]);
+  assert.equal(t.end(100, [pt(1, 0, 0), pt(2, 50, 0), pt(3, 90, 0)]), null);
+  // The second finger lands after the first lifted: two one-finger taps, not a two-finger tap.
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0)]);
+  assert.equal(t.end(60, [pt(1, 0, 0)]), null);
+  t.start(80, [pt(2, 50, 0)]);
+  assert.equal(t.end(140, [pt(2, 50, 0)]), null);
+  // A stylus touch (Pencil) anywhere in the gesture.
+  t = tapDriver();
+  t.start(0, [pt(1, 0, 0), pt(2, 50, 0, true)]);
+  assert.equal(t.end(100, [pt(1, 0, 0), pt(2, 50, 0, true)]), null);
+});
+
+test('two-finger tap: scrolling, blocked states, a finger already down, touchcancel → no tap', () => {
+  const { pt } = tapDriver();
+  const two = [pt(1, 0, 0), pt(2, 50, 0)];
+  // The viewport scrolled between start and end …
+  let t = tapDriver();
+  t.start(0, two);
+  t.setScroll(30);
+  assert.equal(t.end(100, two), null);
+  // … or a scroll event came.
+  t = tapDriver();
+  t.start(0, two);
+  t.r.scrolled();
+  assert.equal(t.end(100, two), null);
+  // Blocked (pen down, dialog open …) at the start or at the end.
+  t = tapDriver();
+  t.start(0, two, { blocked: true });
+  assert.equal(t.end(100, two), null);
+  t = tapDriver();
+  t.start(0, two);
+  assert.equal(t.end(100, two, { blocked: true }), null);
+  // A finger was already down when the gesture's first touch came (e.g. on the toolbar): ignored.
+  const r = createTwoFingerTapRecognizer();
+  r.start({ touches: [pt(5, 0, 0), pt(1, 10, 10)], changed: [pt(1, 10, 10)], at: 0 });
+  assert.equal(r.active(), false);
+  r.start({ touches: [pt(5, 0, 0), pt(1, 10, 10), pt(2, 60, 10)], changed: [pt(2, 60, 10)], at: 20 });
+  assert.equal(r.end({ touches: [], changed: [pt(1, 10, 10), pt(2, 60, 10)], at: 100 }), null);
+  // touchcancel forgets the gesture.
+  t = tapDriver();
+  t.start(0, two);
+  t.r.cancel();
+  assert.equal(t.r.active(), false);
+  assert.equal(t.end(100, two), null);
+});
+
+test('two-finger tap: a gesture whose touchend got lost is replaced by the next fresh touch', () => {
+  const r = createTwoFingerTapRecognizer();
+  const pt = (id, x, y) => ({ id, x, y, stylus: false });
+  r.start({ touches: [pt(1, 0, 0)], changed: [pt(1, 0, 0)], at: 0 }); // never ends
+  r.start({ touches: [pt(3, 0, 0), pt(4, 40, 0)], changed: [pt(3, 0, 0), pt(4, 40, 0)], at: 10000 });
+  assert.deepEqual(r.end({ touches: [], changed: [pt(3, 0, 0), pt(4, 40, 0)], at: 10120 }), { startAt: 10000, endAt: 10120 });
+  // end() without a gesture is harmless.
+  assert.equal(r.end({ touches: [], changed: [pt(9, 0, 0)], at: 1 }), null);
+  r.move({ touches: [pt(9, 100, 100)] });
+  r.scrolled();
+  assert.equal(r.active(), false);
 });
 
 // =============================================================================================
@@ -911,7 +1079,8 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   const dialog = byClass(doc.body, 'dialog')[0];
   const text = dialog.textContent;
   for (const s of ['Googleアカウント', '表示するカレンダー', '予定の登録先',
-    '入力', '指・マウスでも書く', '予定にした手書きを消す（初期値）', 'データについて', 'アプリ専用の非表示フォルダ', 'バージョン 1.0.0', 'me@example.com']) {
+    '入力', '指・マウスでも書く', '2本指でトンと叩くと、ペンと消しゴムが切り替わります',
+    '予定にした手書きを消す（初期値）', 'データについて', 'アプリ専用の非表示フォルダ', 'バージョン 1.0.0', 'me@example.com']) {
     assert.ok(text.includes(s), s);
   }
   // holiday calendar is not listed
@@ -1005,6 +1174,20 @@ test('header: title, view switch, sync and auth chips, partial updates', () => {
   all(header, (c) => c.getAttribute('aria-label') === '設定')[0].click();
   byClass(header, 'auth-chip')[0].click();
   assert.deepEqual(calls, ['prev', 'today', 'next', 'view:day', 'settings', 'auth']);
+
+  // 日 週 月 年: the year page.
+  assert.deepEqual(byTag(seg, 'button').map((b) => b.textContent.trim()), ['日', '週', '月', '年']);
+  const yearBtn = byText(seg, 'button', '年');
+  assert.equal(yearBtn.getAttribute('aria-label'), '年表示');
+  yearBtn.click();
+  assert.equal(calls.at(-1), 'view:year');
+  hd.update({ view: 'year', date: d(2026, 10, 4), range: { start: d(2026, 1, 1), end: d(2027, 1, 1), yearStart: d(2026, 1, 1) } });
+  assert.equal(byClass(header, 'hdr-title-text')[0].textContent, '2026年');
+  assert.equal(yearBtn.getAttribute('aria-pressed'), 'true');
+  assert.equal(byText(seg, 'button', '月').getAttribute('aria-pressed'), 'false');
+  const before = calls.length;
+  yearBtn.click(); // already active → no call
+  assert.equal(calls.length, before);
 });
 
 test('toolbar: tools, contextual colors/sizes, undo state, collapse', () => {
@@ -1148,4 +1331,19 @@ test('banner: appearing or closing never moves the page under the Pencil', () =>
   page.dataset.fit = 'contain';
   showBanner(banner, { text: 'x' });
   assert.equal(viewport.scrollTop, 300);
+
+  // month (fit 'grid', 1.0.5) at its top: stays at the top, the first week is not scrolled under the banner
+  hideBanner(banner);
+  page.dataset.fit = 'grid';
+  viewport.scrollTop = 0;
+  showBanner(banner, { text: 'オフラインです' });
+  assert.equal(viewport.scrollTop, 0);
+  hideBanner(banner);
+  assert.equal(viewport.scrollTop, 0);
+  // scrolled down to its memo area: kept still like a width page
+  viewport.scrollTop = 120;
+  showBanner(banner, { text: 'オフラインです' });
+  assert.equal(viewport.scrollTop, 164);
+  hideBanner(banner);
+  assert.equal(viewport.scrollTop, 120);
 });

@@ -7,6 +7,7 @@ import {
   addMonths,
   atMinutes,
   clamp,
+  daysBetween,
   isValidDate,
   monthGridStart,
   roundMinutes,
@@ -16,15 +17,19 @@ import {
   toYMD,
 } from '../util/date.js';
 
-export const VIEWS = ['day', 'week', 'month'];
+export const VIEWS = ['day', 'week', 'month', 'year'];
 
 export const PAGE_SPECS = Object.freeze({
   // day: time labels in [0, gutter); timeline column [gutter, timelineRight); free memo area [timelineRight, W)
   day: Object.freeze({ W: 1000, H: 2400, gutter: 72, hourH: 100, timelineRight: 660, fit: 'width' }),
   // week: col i spans [gutter + i*colW, gutter + (i+1)*colW), colW = (W - gutter) / 7
   week: Object.freeze({ W: 1400, H: 1920, gutter: 64, hourH: 80, cols: 7, fit: 'width' }),
-  // month: cell (r, c) = x c*200, y r*175, 200 x 175
-  month: Object.freeze({ W: 1400, H: 1050, cols: 7, rows: 6, fit: 'contain' }),
+  // month: cell (r, c) = x c*200, y r*175, 200 x 175 (the grid is y < gridH); y in [memoTop, H) is a
+  // free memo area (メモ欄) below the grid, part of the same ink page
+  month: Object.freeze({ W: 1400, H: 1750, gridH: 1050, memoTop: 1050, cols: 7, rows: 6, fit: 'grid' }),
+  // year: day numbers 1..31 in [0, gutter); month m (0 = Jan) is the column [gutter + m*112, gutter + (m+1)*112),
+  // day d (1..31) the row [(d-1)*rowH, d*rowH)
+  year: Object.freeze({ W: 1400, H: 1860, gutter: 56, cols: 12, rows: 31, rowH: 60, fit: 'width' }),
 });
 
 const DAY_MINUTES = 1440;
@@ -32,8 +37,10 @@ const DAY_MINUTES = 1440;
 const TAP_MAX_HEIGHT = 12;
 
 const MONTH_CELL_W = PAGE_SPECS.month.W / PAGE_SPECS.month.cols; // 200
-const MONTH_CELL_H = PAGE_SPECS.month.H / PAGE_SPECS.month.rows; // 175
+// The month grid is gridH tall (NOT H: the memo area below it belongs to no cell).
+const MONTH_CELL_H = PAGE_SPECS.month.gridH / PAGE_SPECS.month.rows; // 175
 const WEEK_COL_W = (PAGE_SPECS.week.W - PAGE_SPECS.week.gutter) / PAGE_SPECS.week.cols;
+const YEAR_COL_W = (PAGE_SPECS.year.W - PAGE_SPECS.year.gutter) / PAGE_SPECS.year.cols; // 112
 
 // ---------------------------------------------------------------------------------------------
 // Internal helpers
@@ -119,12 +126,77 @@ function timelineSlotForRect(view, r) {
   return { col, startMin, endMin };
 }
 
-/** Month cell for a rect: the cell under its center, clamped into the grid. */
-function monthCellForRect(r) {
-  const { W, H } = PAGE_SPECS.month;
+/** First of the month a month page shows (range.monthStart, else derived from the grid); null if unusable. */
+function monthStartOfRange(range) {
+  if (!range || typeof range !== 'object') return null;
+  if (isValidDate(range.monthStart)) return startOfMonth(range.monthStart);
+  // The grid's first week contains the 1st, so its 7th day always lies in the month.
+  const d = dayOfRange(range, 6);
+  return d ? startOfMonth(d) : null;
+}
+
+/**
+ * Grid cell of the day the month page's memo area (メモ欄) stands for: today when today is in that month,
+ * else the 1st of the month. null when the range is unusable or that day is not on the grid.
+ */
+function monthMemoCell(range, now) {
+  const first = monthStartOfRange(range);
+  const gridStart = dayOfRange(range, 0);
+  if (!first || !gridStart) return null;
+  const n = isValidDate(now) ? now : new Date();
+  const sameMonth = n.getFullYear() === first.getFullYear() && n.getMonth() === first.getMonth();
+  const index = daysBetween(gridStart, sameMonth ? n : first);
+  const { cols, rows } = PAGE_SPECS.month;
+  if (!(index >= 0 && index < cols * rows)) return null;
+  return { row: Math.floor(index / cols), col: index % cols };
+}
+
+/**
+ * Month cell for a rect: the cell under its center, clamped onto the page. A center in the memo area
+ * (y ≥ gridH, or below the page) means the memo day's cell (monthMemoCell). null if that is unusable.
+ */
+function monthCellForRect(r, range, now) {
+  const { W, H, gridH } = PAGE_SPECS.month;
   const cx = clamp((r.minX + r.maxX) / 2, 0, W);
   const cy = clamp((r.minY + r.maxY) / 2, 0, H);
+  if (cy >= gridH) return monthMemoCell(range, now);
   return monthCellAt(cx, cy);
+}
+
+/** Days per month in a leap year: the lengths used when the year is unknown. */
+const MAX_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** Number of days of month `month` (0..11) in `year`; without an integer year the leap-year length. */
+function monthLength(year, month) {
+  if (!Number.isInteger(year)) return MAX_MONTH_DAYS[month];
+  const d = new Date(2000, 0, 1);
+  d.setFullYear(year, month + 1, 0); // day 0 of the next month = last day of this one (any year)
+  return d.getDate();
+}
+
+/** Jan 1 (local midnight) of the year a year page shows: range.yearStart, else its first day; null if unusable. */
+function yearStartOfRange(range) {
+  if (!range || typeof range !== 'object') return null;
+  const d = isValidDate(range.yearStart) ? range.yearStart : dayOfRange(range, 0);
+  return d ? addMonths(d, -d.getMonth()) : null;
+}
+
+/** Local midnight of (month 0..11, day) in the year starting `yearStart`. */
+function yearDate(yearStart, month, day) {
+  return addDays(addMonths(yearStart, month), day - 1);
+}
+
+/**
+ * Year cell { month, day } for a rect: the cell under its center, clamped onto the date columns (the gutter
+ * → January, below the page → day 31). A date that does not exist (2/30, 4/31…) becomes the month's last
+ * day. `year` unknown (null) → February has 29 days.
+ */
+function yearCellForRect(r, year) {
+  const { W, H, gutter } = PAGE_SPECS.year;
+  const cx = clamp((r.minX + r.maxX) / 2, gutter, W);
+  const cy = clamp((r.minY + r.maxY) / 2, 0, H);
+  const cell = yearCellAt(cx, cy);
+  return { month: cell.month, day: Math.min(cell.day, monthLength(year, cell.month)) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -132,16 +204,17 @@ function monthCellForRect(r) {
 
 /**
  * Stable id of the page showing `date`: 'd-2026-10-04' | 'w-2026-09-27' (week start date) |
- * 'm-2026-10' (Sunday start) / 'm1-2026-10' (Monday start).
+ * 'm-2026-10' (Sunday start) / 'm1-2026-10' (Monday start) | 'y-2026'.
  * Week and month ids depend on weekStart because it moves every date of their grid (switching it gives
  * different week/month pages, by design: ink is positioned by grid cell, so it must never be shown on a
- * grid with shifted dates).
+ * grid with shifted dates). The year grid (months × days 1..31) does not depend on it.
  */
 export function pageIdFor(view, date, weekStart = 0) {
   specOf(view);
   const d = requireDate(date);
   if (view === 'day') return `d-${toYMD(d)}`;
   if (view === 'week') return `w-${toYMD(startOfWeek(d, weekStart))}`;
+  if (view === 'year') return `y-${toYMD(d).slice(0, 4)}`;
   // The grid's first weekday, normalized exactly as rangeFor does (0 keeps the original 'm-' ids).
   const gridWeekday = monthGridStart(d, weekStart).getDay();
   return `m${gridWeekday === 0 ? '' : gridWeekday}-${toYMD(startOfMonth(d)).slice(0, -3)}`;
@@ -149,14 +222,21 @@ export function pageIdFor(view, date, weekStart = 0) {
 
 /**
  * Dates shown on the page containing `date`.
- * day: 1 day; week: 7 days from startOfWeek; month: 42 days from monthGridStart (+ monthStart).
- * @returns {{ start: Date, end: Date, days: Date[], monthStart?: Date }}  end is exclusive
+ * day: 1 day; week: 7 days from startOfWeek; month: 42 days from monthGridStart (+ monthStart);
+ * year: every day from Jan 1 to Dec 31 (+ yearStart = Jan 1).
+ * @returns {{ start: Date, end: Date, days: Date[], monthStart?: Date, yearStart?: Date }}  end is exclusive
  */
 export function rangeFor(view, date, weekStart = 0) {
   specOf(view);
   const d = requireDate(date);
   let start;
   let count;
+  if (view === 'year') {
+    start = addMonths(d, -d.getMonth());
+    const end = addMonths(start, 12);
+    const days = Array.from({ length: daysBetween(start, end) }, (_, i) => addDays(start, i));
+    return { start, end, days, yearStart: new Date(start.getTime()) };
+  }
   if (view === 'day') {
     start = startOfDay(d);
     count = 1;
@@ -174,8 +254,8 @@ export function rangeFor(view, date, weekStart = 0) {
 }
 
 /**
- * The date `delta` pages away: day ±1 day, week ±7 days (same weekday), month ±1 month (the 1st).
- * Results are local midnight.
+ * The date `delta` pages away: day ±1 day, week ±7 days (same weekday), month ±1 month (the 1st),
+ * year ±1 year (Jan 1). Results are local midnight.
  */
 export function navigate(view, date, delta) {
   specOf(view);
@@ -183,6 +263,7 @@ export function navigate(view, date, delta) {
   const n = Number.isFinite(Number(delta)) ? Math.trunc(Number(delta)) : 0;
   if (view === 'day') return addDays(startOfDay(d), n);
   if (view === 'week') return addDays(startOfDay(d), 7 * n);
+  if (view === 'year') return addMonths(d, 12 * n - d.getMonth());
   return addMonths(d, n);
 }
 
@@ -201,7 +282,8 @@ export function yToMinutes(view, y) {
 
 /**
  * Horizontal extent of a column: { x, w }, or null for a column that does not exist.
- * day: col 0 = the timeline column; week: day columns 0..6; month: grid columns 0..6.
+ * day: col 0 = the timeline column; week: day columns 0..6; month: grid columns 0..6;
+ * year: month columns 0..11.
  */
 export function columnRect(view, col) {
   const spec = specOf(view);
@@ -211,30 +293,32 @@ export function columnRect(view, col) {
   }
   if (col >= spec.cols) return null;
   if (view === 'week') return { x: spec.gutter + col * WEEK_COL_W, w: WEEK_COL_W };
+  if (view === 'year') return { x: spec.gutter + col * YEAR_COL_W, w: YEAR_COL_W };
   return { x: col * MONTH_CELL_W, w: MONTH_CELL_W };
 }
 
 /**
  * Column under logical x, or -1.
  * day: 0 inside the timeline [gutter, timelineRight), -1 in the gutter or the memo area.
- * week: 0..6, -1 in the gutter or outside the page (x === W counts as the last column).
+ * week / year: 0..6 / 0..11, -1 in the gutter or outside the page (x === W counts as the last column).
  * month: 0..6 or -1 outside the page.
  */
 export function xToColumn(view, x) {
   const spec = specOf(view);
   if (!isNum(x)) return -1;
   if (view === 'day') return x >= spec.gutter && x < spec.timelineRight ? 0 : -1;
-  if (view === 'week') {
+  if (view === 'week' || view === 'year') {
     if (x < spec.gutter || x > spec.W) return -1;
     // The epsilon makes columnRect(view, i).x map back to i despite float rounding of colW.
-    return Math.min(spec.cols - 1, Math.floor((x - spec.gutter) / WEEK_COL_W + 1e-9));
+    const colW = view === 'week' ? WEEK_COL_W : YEAR_COL_W;
+    return Math.min(spec.cols - 1, Math.floor((x - spec.gutter) / colW + 1e-9));
   }
   if (x < 0 || x > spec.W) return -1;
   return Math.min(spec.cols - 1, Math.floor(x / MONTH_CELL_W));
 }
 
 // ---------------------------------------------------------------------------------------------
-// Month grid
+// Month grid (y < gridH; the memo area below it belongs to no cell)
 
 /** Logical rect { x, y, w, h } of month cell (row 0..5, col 0..6); null if out of range. */
 export function monthCellRect(row, col) {
@@ -245,16 +329,45 @@ export function monthCellRect(row, col) {
 }
 
 /**
- * Month cell { row, col } containing the logical point, or null outside the page.
- * Cells are half-open; the page's right/bottom edges belong to the last column/row.
+ * Month cell { row, col } containing the logical point, or null outside the grid (outside the page, or in
+ * the memo area y ≥ gridH). Cells are half-open; the page's right edge belongs to the last column.
  */
 export function monthCellAt(x, y) {
-  const { W, H, rows, cols } = PAGE_SPECS.month;
-  if (!isNum(x) || !isNum(y) || x < 0 || y < 0 || x > W || y > H) return null;
+  const { W, gridH, rows, cols } = PAGE_SPECS.month;
+  if (!isNum(x) || !isNum(y) || x < 0 || y < 0 || x > W || y >= gridH) return null;
   return {
     row: Math.min(rows - 1, Math.floor(y / MONTH_CELL_H)),
     col: Math.min(cols - 1, Math.floor(x / MONTH_CELL_W)),
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Year grid (12 month columns × day rows 1..31)
+
+/**
+ * Logical rect { x, y, w, h } of the year cell of month `monthIndex` (0 = January .. 11) and day 1..31;
+ * null if out of range. Geometry only: dates that do not exist (2/30, 4/31…) have a (hatched) cell too.
+ */
+export function yearCellRect(monthIndex, day) {
+  const { gutter, cols, rows, rowH } = PAGE_SPECS.year;
+  if (!Number.isInteger(monthIndex) || !Number.isInteger(day)) return null;
+  if (monthIndex < 0 || monthIndex >= cols || day < 1 || day > rows) return null;
+  return { x: gutter + monthIndex * YEAR_COL_W, y: (day - 1) * rowH, w: YEAR_COL_W, h: rowH };
+}
+
+/**
+ * Year cell { month (0..11), day (1..31), valid } containing the logical point, or null in the day-number
+ * gutter or outside the page. Cells are half-open; the page's right/bottom edges belong to the last
+ * column/row. valid: the date exists — false for 2/30, 4/31…; 2/29 depends on `year` (an integer year;
+ * without one it counts as valid, as in leap years).
+ * @returns {{ month: number, day: number, valid: boolean } | null}
+ */
+export function yearCellAt(x, y, year = null) {
+  const { W, H, gutter, cols, rows, rowH } = PAGE_SPECS.year;
+  if (!isNum(x) || !isNum(y) || x < gutter || y < 0 || x > W || y > H) return null;
+  const month = Math.min(cols - 1, Math.floor((x - gutter) / YEAR_COL_W + 1e-9));
+  const day = Math.min(rows, Math.floor(y / rowH) + 1);
+  return { month, day, valid: day <= monthLength(year, month) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -266,19 +379,31 @@ export function monthCellAt(x, y) {
  *   when in the gutter); start = round15(minY), end = round15(maxY) (nearest 15 min, so a drag that
  *   overshoots a line slightly still ends on it); shorter than 30 min → 1 hour;
  *   rect height < 12 lu (a tap) → the half hour under the center, 1 hour long; end ≤ 24:00.
- * month: an all-day event on the cell under the rect's center.
+ * month: an all-day event on the cell under the rect's center; a center in the memo area (y ≥ gridH)
+ *   means today when today is in that month, else the 1st of the month.
+ * year: an all-day event on the cell under the rect's center (gutter → January); a date that does not
+ *   exist (2/30, 4/31…) becomes the month's last day.
+ * `now` (default: the current time) only decides the month memo area's day.
  * Returns null for a malformed rect or range.
  * @returns {{ start: Date, end: Date, allDay: boolean } | null}
  */
-export function rectToEventRange(view, range, rect) {
+export function rectToEventRange(view, range, rect, now = new Date()) {
   specOf(view);
   const r = normalizeRect(rect);
   if (!r) return null;
 
   if (view === 'month') {
-    const cell = monthCellForRect(r);
+    const cell = monthCellForRect(r, range, now);
     const day = cell && dayOfRange(range, cell.row * PAGE_SPECS.month.cols + cell.col);
     if (!day) return null;
+    return { start: day, end: addDays(day, 1), allDay: true };
+  }
+
+  if (view === 'year') {
+    const yearStart = yearStartOfRange(range);
+    if (!yearStart) return null;
+    const cell = yearCellForRect(r, yearStart.getFullYear());
+    const day = yearDate(yearStart, cell.month, cell.day);
     return { start: day, end: addDays(day, 1), allDay: true };
   }
 
@@ -290,19 +415,27 @@ export function rectToEventRange(view, range, rect) {
 
 /**
  * The logical rect the event from rectToEventRange(view, range, rect) would occupy (live preview of
- * the 予定 tool). day/week: the column × the snapped minutes; month: the cell. null if malformed.
- * `range` is accepted for API symmetry; the geometry does not depend on it.
+ * the 予定 tool). day/week: the column × the snapped minutes; month: the cell (for the memo area: the memo
+ * day's cell); year: the cell of the event's date. null if malformed (or, for the month memo area, when
+ * the range is unusable). Otherwise the geometry does not depend on `range` (year: only for 2/29).
  * @returns {{ minX: number, minY: number, maxX: number, maxY: number } | null}
  */
-export function snapEventRect(view, range, rect) {
+export function snapEventRect(view, range, rect, now = new Date()) {
   specOf(view);
   const r = normalizeRect(rect);
   if (!r) return null;
 
   if (view === 'month') {
-    const cell = monthCellForRect(r);
+    const cell = monthCellForRect(r, range, now);
     const c = cell && monthCellRect(cell.row, cell.col);
     if (!c) return null;
+    return { minX: c.x, minY: c.y, maxX: c.x + c.w, maxY: c.y + c.h };
+  }
+
+  if (view === 'year') {
+    const yearStart = yearStartOfRange(range);
+    const cell = yearCellForRect(r, yearStart ? yearStart.getFullYear() : null);
+    const c = yearCellRect(cell.month, cell.day);
     return { minX: c.x, minY: c.y, maxX: c.x + c.w, maxY: c.y + c.h };
   }
 
@@ -318,17 +451,28 @@ export function snapEventRect(view, range, rect) {
 
 /**
  * The slot under a logical point: { date, minutes } for day/week (minutes floored to 15),
- * { date, minutes: null } for month; null outside the timeline / grid or for bad input.
+ * { date, minutes: null } for month (memo area: the memo day, see rectToEventRange) and year (a date that
+ * does not exist → the month's last day); null outside the timeline / grid (year: in the day-number
+ * gutter) or for bad input.
  * @returns {{ date: Date, minutes: number|null } | null}
  */
-export function pointToSlot(view, range, x, y) {
+export function pointToSlot(view, range, x, y, now = new Date()) {
   const spec = specOf(view);
   if (!isNum(x) || !isNum(y) || y < 0 || y > spec.H) return null;
 
   if (view === 'month') {
-    const cell = monthCellAt(x, y);
+    if (x < 0 || x > spec.W) return null;
+    const cell = y >= spec.gridH ? monthMemoCell(range, now) : monthCellAt(x, y);
     const date = cell && dayOfRange(range, cell.row * spec.cols + cell.col);
     return date ? { date, minutes: null } : null;
+  }
+
+  if (view === 'year') {
+    const yearStart = yearStartOfRange(range);
+    const cell = yearStart && yearCellAt(x, y);
+    if (!cell) return null;
+    const day = Math.min(cell.day, monthLength(yearStart.getFullYear(), cell.month));
+    return { date: yearDate(yearStart, cell.month, day), minutes: null };
   }
 
   const col = xToColumn(view, x);
