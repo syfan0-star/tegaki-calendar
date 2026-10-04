@@ -529,7 +529,7 @@
   padding: 3px 0 4px;
   border-top: 1px solid var(--line-soft);
 }
-.sh-allday:not(.sh-allday--day) {
+.sh-allday {
   max-height: 34vh;
   max-height: 34dvh;
   overflow-y: auto;
@@ -664,12 +664,6 @@
 }
 
 .sh-allday-items .ad-chip { margin: 0; }
-.sh-allday-items .ad-chip.is-extra { display: none; }
-.sh-allday-items.is-expanded .ad-chip.is-extra { display: block; }
-.sh-allday-items .ad-more {
-  align-self: flex-start;
-  margin: 0;
-}
 
 /* Month: weekday labels over the 7 columns. */
 .sh-weekdays {

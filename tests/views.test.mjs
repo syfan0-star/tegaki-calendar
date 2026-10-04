@@ -655,16 +655,11 @@ test('day render: memo area, timeline events, date header and all-day toggle', (
   head.fire('click', {});
   assert.equal(days.length, 1);
 
+  // every all-day event is shown from the start: no 「他n件」 toggle
   const items = m.stickyEl.findAll('sh-allday-items')[0];
   assert.equal(items.findAll('ad-chip').length, 5);
-  assert.equal(items.findAll('is-extra').length, 2);
-  const toggle = items.findAll('ad-toggle')[0];
-  assert.equal(toggle.textContent, '他2件');
-  toggle.fire('click', {});
-  assert.ok(items.className.includes('is-expanded'));
-  assert.equal(toggle.textContent, '折りたたむ');
-  toggle.fire('click', {});
-  assert.ok(!items.className.includes('is-expanded'));
+  assert.equal(items.findAll('ad-toggle').length, 0);
+  assert.equal(items.findAll('ad-more').length, 0);
 }));
 
 // ---------------------------------------------------------------------------------------------
@@ -745,14 +740,11 @@ test('week render: all-day rows arriving with the events do not move the page un
   assert.equal(pageTop(), top0);
 }));
 
-test('day render: the 他n件 toggle and new all-day events keep the page in place', () => withDom((doc) => {
+test('day render: all-day events arriving with the events keep the page in place', () => withDom((doc) => {
   const m = mountPage(doc, 'day', PAGE_SPECS.day);
   const headerHeight = (sticky) => {
     const items = sticky.findAll('sh-allday-items')[0];
-    if (!items) return 52;
-    const open = items.className.includes('is-expanded');
-    const chips = items.findAll('ad-chip').filter((c) => open || !c.className.includes('is-extra')).length;
-    return 52 + 8 + (chips + items.findAll('ad-toggle').length) * 24;
+    return items ? 52 + 8 + items.findAll('ad-chip').length * 24 : 52;
   };
   const pageTop = simulateStickyLayout(m, headerHeight);
   const date = at(2026, 10, 13);
@@ -763,16 +755,10 @@ test('day render: the 他n件 toggle and new all-day events keep the page in pla
   m.viewportEl.scrollTop = 300;
   const top0 = pageTop();
   dayView.render({ ...base, events: allDay });
-  assert.equal(m.viewportEl.scrollTop, 300 + 8 + 4 * 24); // 3 chips + toggle
+  assert.equal(m.viewportEl.scrollTop, 300 + 8 + 5 * 24); // all 5 chips
   assert.equal(pageTop(), top0);
-
-  const toggle = m.stickyEl.findAll('ad-toggle')[0];
-  toggle.fire('click', {});
-  assert.equal(toggle.textContent, '折りたたむ');
-  assert.equal(m.viewportEl.scrollTop, 300 + 8 + 6 * 24);
-  assert.equal(pageTop(), top0);
-  toggle.fire('click', {});
-  assert.equal(m.viewportEl.scrollTop, 300 + 8 + 4 * 24);
+  dayView.render({ ...base, events: allDay.slice(0, 2) }); // two removed elsewhere
+  assert.equal(m.viewportEl.scrollTop, 300 + 8 + 2 * 24);
   assert.equal(pageTop(), top0);
 }));
 

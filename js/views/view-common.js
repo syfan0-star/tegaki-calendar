@@ -44,8 +44,6 @@ export const EVENT_LINE_HEIGHT = 1.25;
 export const MONTH_LIST_RATIO = 0.62;
 /** Week header: all-day rows shown before collapsing the rest into per-day '他n件'. */
 export const MAX_ALLDAY_ROWS = 3;
-/** Day header: all-day chips shown before the 「他n件」 toggle. */
-export const MAX_DAY_ALLDAY_CHIPS = 3;
 
 const UNTITLED = '(タイトルなし)';
 

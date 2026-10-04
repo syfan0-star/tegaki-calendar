@@ -3,10 +3,9 @@
 
 import { PAGE_SPECS, columnRect, rangeFor } from './page-geometry.js';
 import { eventsOnDay, layoutTimedEvents } from './event-layout.js';
-import { WEEKDAYS_JA, addDays, formatDateJa, isSameDay, minutesOfDay, toYMD } from '../util/date.js';
+import { WEEKDAYS_JA, addDays, formatDateJa, isSameDay, minutesOfDay } from '../util/date.js';
 import { getHolidayName } from '../util/holidays-jp.js';
 import {
-  MAX_DAY_ALLDAY_CHIPS,
   TYPE,
   appendNowLayer,
   appendTimeAxis,
@@ -36,9 +35,6 @@ const SPEC = PAGE_SPECS.day;
 /** Memo area: ruled line spacing and side insets (lu). */
 const RULE_STEP = 50;
 const RULE_INSET = 20;
-
-/** The day whose all-day list the user expanded (kept across re-renders of the same day). */
-let expandedAllDayKey = null;
 
 function timelineRect() {
   return columnRect(VIEW, 0) || { x: SPEC.gutter, w: SPEC.timelineRight - SPEC.gutter };
@@ -119,39 +115,22 @@ function dateHeader(info, onDayTap) {
   return btn;
 }
 
-/** All-day chips stacked in the timeline column; more than MAX_DAY_ALLDAY_CHIPS → 「他n件」 toggle. */
+/**
+ * All-day chips stacked in the timeline column — every one of them (the user asked for all all-day
+ * events from the start; an extreme stack scrolls inside the header, see .sh-allday in views.css).
+ */
 function allDayList(ctx, day) {
   const allDay = safeCall(() => eventsOnDay(ctx.events, day), []).filter((ev) => ev.allDay);
   if (!allDay.length) return null;
 
-  const key = toYMD(day);
   const wrap = htmlEl('div', 'sh-allday sh-allday--day');
   const list = htmlEl('div', 'sh-allday-items');
   const nextDay = addDays(day, 1);
-  allDay.forEach((ev, i) => {
-    const chip = createAllDayChip(ev, ctx.onEventTap, {
+  for (const ev of allDay) {
+    list.append(createAllDayChip(ev, ctx.onEventTap, {
       contLeft: ev.start.getTime() < day.getTime(),
       contRight: ev.end.getTime() > nextDay.getTime(),
-    });
-    if (i >= MAX_DAY_ALLDAY_CHIPS) chip.classList.add('is-extra');
-    list.append(chip);
-  });
-  const hiddenCount = allDay.length - MAX_DAY_ALLDAY_CHIPS;
-  if (hiddenCount > 0) {
-    const toggle = htmlEl('button', 'ad-more ad-toggle');
-    toggle.type = 'button';
-    const sync = () => {
-      const open = expandedAllDayKey === key;
-      list.classList.toggle('is-expanded', open);
-      toggle.textContent = open ? '折りたたむ' : `他${hiddenCount}件`;
-      toggle.setAttribute('aria-expanded', String(open));
-    };
-    onActivate(toggle, () => {
-      expandedAllDayKey = expandedAllDayKey === key ? null : key;
-      keepPageInPlace(ctx.pageEl, SPEC.fit, sync); // the header grows/shrinks; the paper must not move
-    });
-    sync();
-    list.append(toggle);
+    }));
   }
   wrap.append(htmlEl('div', 'sh-allday-label', '終日'), list);
   return wrap;
