@@ -40,15 +40,37 @@ test('sw.js VERSION equals APP_VERSION (cache name follows the app version)', ()
   assert.equal(m[1], APP_VERSION);
 });
 
-test('version 1.0.5 everywhere: config.js, sw.js and package.json agree', () => {
-  assert.equal(APP_VERSION, '1.0.5');
+test('version 1.0.6 everywhere: config.js, sw.js and package.json agree', () => {
+  assert.equal(APP_VERSION, '1.0.6');
   assert.equal(JSON.parse(read('package.json')).version, APP_VERSION);
 });
 
-test('APP_FILES precaches the year page and the two-finger tap module', () => {
+test('APP_FILES precaches the year page, the two-finger tap module and the ink export', () => {
   const files = appFiles();
   assert.ok(files.includes('js/views/year-view.js'));
   assert.ok(files.includes('js/ui/gestures.js'));
+  assert.ok(files.includes('js/data/ink-export.js'));
+});
+
+test('main.js: 「手書きを書き出す」 collects through driveForInk, reports through notify, and downloads one JSON', () => {
+  const src = read('js/main.js');
+  assert.match(src, /import \{ collectAll, buildExport, exportFileName \} from '\.\/data\/ink-export\.js';/);
+  assert.match(mainFunction(src, 'settingsFlow'), /case 'exportInk':\s*await exportInkFlow\(Boolean\(result\.includeDemo\)\);/);
+  const flow = mainFunction(src, 'exportInkFlow');
+  assert.match(flow, /notify\('手書きを集めています…'/);
+  assert.match(flow, /const drive = driveForInk\(\);/);
+  assert.match(flow, /openKV\(\{ dbName: INK_DB_NAMES\.demo \}\)/);
+  assert.match(flow, /collectAll\(\{ drive, kv: S\.kv, demoKv/);
+  assert.match(flow, /collectAll\(\{ drive: null, kv: S\.kv, demoKv/, 'offline: the local part only');
+  assert.match(flow, /buildExport\(\{ pages, app: `web\/\$\{APP_VERSION\}`, includesDemo/);
+  assert.match(flow, /downloadText\(JSON\.stringify\(doc\), exportFileName\(\), 'application\/json'\)/);
+  for (const s of ['書き出す手書きがありません', '手書きを書き出しました（${doc.pages.length} ページ・${strokes} 本）',
+    'オフラインのため、この端末にある分だけを書き出しました', '書き出せませんでした: ${errorMessage(err)}']) {
+    assert.ok(flow.includes(s), s);
+  }
+  assert.doesNotMatch(flow, /\btoast\(/, 'toasts go through notify');
+  assert.doesNotMatch(flow, /S\.drive\b/, 'there is no S.drive');
+  assert.match(mainFunction(src, 'downloadText'), /a\.download = fileName;[\s\S]*a\.click\(\)/);
 });
 
 /** Source of a top-level function of main.js (from its declaration to the closing brace at column 0). */

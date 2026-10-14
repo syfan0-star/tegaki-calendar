@@ -34,9 +34,22 @@ export function createDriveApi(http) {
   /** All files (any device) tagged appProperties.page = pageId, oldest first, all result pages. */
   async function listPageFiles(pageId) {
     if (typeof pageId !== 'string' || !pageId) throw new TypeError('drive: pageId must be a non-empty string');
+    return listFiles(`appProperties has { key='page' and value='${escapeQueryValue(pageId)}' }`);
+  }
+
+  /**
+   * Every ink file of every page and every device (appProperties.schema = '1'), oldest first, all result
+   * pages. For the export (js/data/ink-export.js); ink-store does not use it.
+   */
+  function listAllInkFiles() {
+    return listFiles("appProperties has { key='schema' and value='1' }");
+  }
+
+  /** Files of appDataFolder matching `q`, following nextPageToken (at most MAX_PAGES result pages). */
+  async function listFiles(q) {
     const query = {
       spaces: 'appDataFolder',
-      q: `appProperties has { key='page' and value='${escapeQueryValue(pageId)}' }`,
+      q,
       fields: `nextPageToken,files(${META_FIELDS})`, // without nextPageToken here, paging silently stops
       pageSize: 1000,
       orderBy: 'createdTime',
@@ -134,7 +147,7 @@ export function createDriveApi(http) {
     }
   }
 
-  return { listPageFiles, getMeta, download, generateId, create, update, remove };
+  return { listPageFiles, listAllInkFiles, getMeta, download, generateId, create, update, remove };
 }
 
 function requireId(id) {

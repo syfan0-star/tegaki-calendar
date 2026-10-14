@@ -54,6 +54,38 @@ test('listPageFiles: exact query, nextPageToken in fields, all pages', async () 
   assert.equal(http.calls[2].query.pageToken, 't3');
 });
 
+test('listAllInkFiles: every ink file of every page and device (schema=1), same fields, all result pages', async () => {
+  const pages = [
+    { files: [{ id: 'f1', appProperties: { page: 'd-2026-10-07', dev: 'a', schema: '1' } }], nextPageToken: 't2' },
+    { files: [{ id: 'f2', appProperties: { page: 'd-2026-10-07', dev: 'b', schema: '1' } }, { id: 'f3', appProperties: { page: 'y-2026', dev: 'a', schema: '1' } }] },
+  ];
+  const http = fakeHttp((url, opts, i) => pages[i]);
+  const drive = createDriveApi(http);
+  const files = await drive.listAllInkFiles();
+  assert.deepEqual(files.map((f) => f.id), ['f1', 'f2', 'f3']);
+  assert.equal(http.calls.length, 2);
+  const q = http.calls[0];
+  assert.equal(q.url, `${DRIVE_API}/files`);
+  assert.deepEqual(q.query, {
+    spaces: 'appDataFolder',
+    q: "appProperties has { key='schema' and value='1' }",
+    fields: `nextPageToken,files(${META_FIELDS})`,
+    pageSize: 1000,
+    orderBy: 'createdTime',
+    pageToken: undefined,
+  });
+  assert.equal(http.calls[1].query.pageToken, 't2');
+  assert.equal(http.calls[1].query.q, q.query.q);
+  assert.deepEqual(await createDriveApi(fakeHttp(() => ({}))).listAllInkFiles(), [], 'no files field → []');
+});
+
+test('listAllInkFiles stops after MAX_PAGES (200) result pages', async () => {
+  const http = fakeHttp((url, opts, i) => ({ files: [{ id: `x${i}` }], nextPageToken: `t${i + 1}` }));
+  const files = await createDriveApi(http).listAllInkFiles();
+  assert.equal(http.calls.length, 200);
+  assert.equal(files.length, 200);
+});
+
 test('listPageFiles escapes the page id and validates it', async () => {
   const http = fakeHttp(() => ({ files: [] }));
   const drive = createDriveApi(http);

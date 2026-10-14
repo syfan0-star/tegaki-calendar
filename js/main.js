@@ -38,6 +38,7 @@ import { createDriveApi } from './google/drive.js';
 import { createGoogleCalendarSource, createDemoCalendarSource, newEventId } from './data/calendar-source.js';
 import { createInkStore } from './data/ink-store.js';
 import { openKV } from './util/idb.js';
+import { collectAll, buildExport, exportFileName } from './data/ink-export.js';
 import { emptyPage, mergePages, sameContent } from './ink/model.js';
 import {
   legacySourcesFor, mergeLegacyInk, createLegacyCarryQueue, legacyDoneKey, legacyDoneFlagCounts, LEGACY_DONE_PREFIX,
@@ -240,12 +241,16 @@ function reportError(err, label) {
   notifyOnce(`err:${label}`, errorMessage(err), 30 * 1000, { kind: 'error' });
 }
 
+/** Shows a toast; never throws. Returns its handle ({ dismiss() }; a no-op one when nothing was shown). */
 function notify(message, opts) {
-  if (!message) return;
+  const none = { dismiss() {} };
+  if (!message) return none;
   try {
-    toast(message, opts);
+    const t = toast(message, opts);
+    return t && typeof t.dismiss === 'function' ? t : none;
   } catch (err) {
     warn('toast failed', describe(err));
+    return none;
   }
 }
 
@@ -2370,8 +2375,70 @@ async function settingsFlow() {
     case 'exitDemo':
       await switchMode(false);
       break;
+    case 'exportInk':
+      await exportInkFlow(Boolean(result.includeDemo));
+      break;
     default:
       break;
+  }
+}
+
+/**
+ * 「手書きを書き出す（iPad アプリ用）」: every page of every device (Drive, when the signed-in account owns the
+ * local ink), the local database and — with the check — the お試しモード database, as ONE tegaki-web-export
+ * JSON saved through <a download> (iPad: the 「ファイル」 app's ダウンロード). Offline in Google mode: the
+ * local part is exported and said so. Nothing is written anywhere.
+ */
+async function exportInkFlow(includeDemo) {
+  if (!S.kv) {
+    notify('書き出せませんでした: 端末内のデータベースを開けません', { kind: 'error' });
+    return;
+  }
+  const collecting = notify('手書きを集めています…', { duration: 0 });
+  let offline = false;
+  try {
+    const drive = driveForInk();
+    const demoKv = includeDemo && S.mode === 'google' ? await openKV({ dbName: INK_DB_NAMES.demo }).catch(() => null) : null;
+    let pages;
+    try {
+      pages = await collectAll({ drive, kv: S.kv, demoKv });
+    } catch (err) {
+      if (!drive || !isOfflineError(err)) throw err;
+      offline = true;
+      pages = await collectAll({ drive: null, kv: S.kv, demoKv });
+    }
+    const doc = buildExport({ pages, app: `web/${APP_VERSION}`, includesDemo: Boolean(demoKv) || S.mode === 'demo' });
+    collecting.dismiss();
+    if (doc.pages.length === 0) {
+      notify('書き出す手書きがありません');
+      return;
+    }
+    downloadText(JSON.stringify(doc), exportFileName(), 'application/json');
+    const strokes = doc.pages.reduce((n, p) => n + Object.keys(p.strokes).length, 0);
+    notify(`手書きを書き出しました（${doc.pages.length} ページ・${strokes} 本）`);
+    if (offline) notify('オフラインのため、この端末にある分だけを書き出しました', { duration: 6000 });
+  } catch (err) {
+    collecting.dismiss();
+    warn('ink export failed', describe(err));
+    notify(`書き出せませんでした: ${errorMessage(err)}`, { kind: 'error', duration: 8000 });
+  }
+}
+
+/** Saves `text` as a file through a Blob URL and a temporary <a download> (the only way a Web app can). */
+function downloadText(text, fileName, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  try {
+    a.click();
+  } finally {
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60 * 1000); // Safari starts the download asynchronously
   }
 }
 

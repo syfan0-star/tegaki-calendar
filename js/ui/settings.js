@@ -1,11 +1,12 @@
 // Settings sheet (module F2b).
 //
 // openSettings({ settings, calendars, auth: { signedIn, email, configured, demo }, version })
-//   → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes' }>
+//   → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes'|'exportInk', includeDemo? }>
 //
 // Changes apply when the sheet closes (「完了」, Esc or a backdrop tap all keep them): the result always
 // carries the edited copy of `settings` (other keys untouched). Account buttons close the sheet at once
-// with their `action`.
+// with their `action`. 「データ」 (signed in or お試しモード only): 「手書きを書き出す（iPad アプリ用）」 closes with
+// action 'exportInk' and includeDemo (the 「お試しモードの手書きも含める」 check; shown in Google mode only).
 // Optional extras: auth.missingScopes (boolean | string[]) shows 「権限を追加」 (action 'addScopes');
 // option `root` = modal host element.
 
@@ -23,6 +24,10 @@ export const SETTINGS_TEXT = Object.freeze({
   allowFingerHint: 'Apple Pencil がないときや、パソコンで試すときに使います。オンのときは、2本指でスクロールします',
   twoFingerTap: '2本指でトンと叩くと、ペンと消しゴムが切り替わります',
   eraseDefault: '予定にした手書きを消す（初期値）',
+  data: 'データ',
+  exportInk: '手書きを書き出す（iPad アプリ用）',
+  exportIncludeDemo: 'お試しモードの手書きも含める',
+  exportHint: '全ページ・全端末の手書きを 1 つのファイルにまとめて保存します。iPad では「ファイル」アプリのダウンロードに入ります。',
   about: 'データについて',
   aboutText: [
     '手書きは Google ドライブの「アプリ専用の非表示フォルダ」に保存されます。ドライブの一覧には表示されず、このアプリ以外からは見えません。',
@@ -126,11 +131,11 @@ export function openSettings(options = {}) {
       onDismiss: () => finish(),
     });
 
-    function finish(action) {
+    function finish(action, extra) {
       if (settled) return;
       settled = true;
       modal.close();
-      resolve(action ? { settings: draft, action } : { settings: draft });
+      resolve(action ? { settings: draft, action, ...extra } : { settings: draft });
     }
 
     // ---- 「Googleアカウント」
@@ -211,6 +216,30 @@ export function openSettings(options = {}) {
     const eraseSection = h('section', { class: 'settings-section', 'aria-label': SETTINGS_TEXT.eraseDefault },
       h('div', { class: 'card-group' }, erase.row));
 
+    // ---- 「データ」: the export for the iPad app (nothing to export from the welcome screen)
+    let dataSection = null;
+    if (auth.signedIn || auth.demo) {
+      let includeDemo = false;
+      const exportBtn = h('button', {
+        type: 'button', class: 'btn', onClick: () => finish('exportInk', { includeDemo }),
+      }, SETTINGS_TEXT.exportInk);
+      let demoRow = null;
+      if (auth.signedIn && !auth.demo) {
+        const input = h('input', {
+          type: 'checkbox', class: 'check', checked: false,
+          onChange: () => { includeDemo = Boolean(input.checked); },
+        });
+        demoRow = h('label', { class: 'settings-row' },
+          h('span', { class: 'settings-row-text' },
+            h('span', { class: 'settings-row-label' }, SETTINGS_TEXT.exportIncludeDemo)),
+          input);
+      }
+      dataSection = section(SETTINGS_TEXT.data,
+        demoRow ? h('div', { class: 'card-group' }, demoRow) : null,
+        h('div', { class: 'settings-actions' }, exportBtn),
+        h('p', { class: 'settings-note' }, SETTINGS_TEXT.exportHint));
+    }
+
     // ---- 「データについて」 + version
     const aboutSection = section(SETTINGS_TEXT.about,
       h('div', { class: 'settings-about' }, SETTINGS_TEXT.aboutText.map((t) => h('p', null, t))),
@@ -220,6 +249,6 @@ export function openSettings(options = {}) {
     modal.dialog.append(
       h('div', { class: 'dialog-header' }, h('h2', { class: 'dialog-title', id: titleId }, SETTINGS_TEXT.title), doneBtn),
       h('div', { class: 'dialog-body' },
-        accountSection, calendarSection, defaultSection, inputSection, eraseSection, aboutSection));
+        accountSection, calendarSection, defaultSection, inputSection, eraseSection, dataSection, aboutSection));
   });
 }

@@ -1,0 +1,16 @@
+{ "format": "tegaki-web-export", "v": 1, "exportedAt": "2026-10-14T09:41:00.000+09:00", "app": "web/1.0.6", "includesDemo": false,
+  "pages": [
+    { "v": 1, "pageId": "m1-2026-10", "updatedAt": 1760000002000, "deleted": {},
+      "strokes": {
+        "a1": { "id": "a1", "tool": "pen", "color": "#1f2937", "size": 3.5, "pts": [410, 360, 0.4, 450, 380, 0.6, 490, 370, 0.8], "t": 1760000001000 },
+        "b2": { "id": "b2", "tool": "highlighter", "color": "#fde047", "size": 18, "pts": [100, 1100, 0.5, 300, 1100, 0.5], "t": 1760000002000 } } },
+    { "v": 1, "pageId": "w-2026-10-05", "updatedAt": 1760000003000, "deleted": {},
+      "strokes": { "c3": { "id": "c3", "tool": "pen", "color": "#2563eb", "size": 6, "pts": [700, 720, 0.5, 760, 840, 0.5], "t": 1760000003000 } } },
+    { "v": 1, "pageId": "d-2026-10-07", "updatedAt": 1760000004000, "deleted": { "zz": 1760000000500 },
+      "strokes": { "d4": { "id": "d4", "tool": "pen", "color": "#1f2937", "size": 2, "pts": [100, 900, 1, 300, 1050, 1], "t": 1760000004000 } } },
+    { "v": 1, "pageId": "y-2026", "updatedAt": 1760000005000, "deleted": {},
+      "strokes": { "e5": { "id": "e5", "tool": "pen", "color": "#1f2937", "size": 3.5, "pts": [1000, 540, 0.6, 1050, 560, 0.6], "t": 1760000005000 } } },
+    { "v": 1, "pageId": "m-2026-09", "updatedAt": 1760000006000, "deleted": {},
+      "strokes": { "f6": { "id": "f6", "tool": "pen", "color": "#1f2937", "size": 3.5, "pts": [10, 10, 0.5, 20, 20, 0.5], "t": 1760000006000 } } },
+    { "v": 1, "pageId": "d-2026-10-08", "updatedAt": 0, "deleted": {}, "strokes": {} }
+  ] }

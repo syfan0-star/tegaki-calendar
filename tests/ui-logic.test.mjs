@@ -1086,7 +1086,7 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   // holiday calendar is not listed
   assert.ok(!text.includes('日本の祝日'));
   const checks = byClass(dialog, 'check');
-  assert.deepEqual(checks.map((c) => c.checked), [true, false, true]); // 自分, 仕事 (hidden), 共有
+  assert.deepEqual(checks.map((c) => c.checked), [true, false, true, false]); // 自分, 仕事 (hidden), 共有, お試しモードの手書きも含める
   checks[1].checked = true;
   checks[1].dispatchEvent(new FakeEvent('change'));
   checks[2].checked = false;
@@ -1122,6 +1122,65 @@ test('settings: edits are returned on 完了, actions close at once', async () =
   assert.ok(d3.textContent.includes('Google連携の設定がまだ済んでいません'));
   d3.dispatchEvent(new FakeEvent('keydown', { key: 'Escape' }));
   assert.deepEqual((await p3).settings.hiddenCalendarIds, []);
+});
+
+test('settings: 「データ」 → 手書きを書き出す（iPad アプリ用） closes with exportInk and includeDemo', async () => {
+  const { doc } = setupDom();
+  const settings = { allowFinger: false, hiddenCalendarIds: [] };
+  const sectionText = (dialog) => {
+    const sec = byClass(dialog, 'settings-section').find((s) => byClass(s, 'settings-heading')[0]?.textContent === 'データ');
+    return sec ? sec.textContent : null;
+  };
+
+  // Google mode: button, the お試しモード check (off) and the note; the section sits before 「データについて」.
+  const p = openSettings({ settings, calendars: CALS, auth: { signedIn: true, email: 'me@example.com', configured: true, demo: false }, version: '1.0.6' });
+  let dialog = byClass(doc.body, 'dialog')[0];
+  const text = dialog.textContent;
+  assert.ok(text.indexOf('手書きを書き出す（iPad アプリ用）') < text.indexOf('データについて'));
+  for (const s of ['データ', '手書きを書き出す（iPad アプリ用）', 'お試しモードの手書きも含める',
+    '全ページ・全端末の手書きを 1 つのファイルにまとめて保存します。iPad では「ファイル」アプリのダウンロードに入ります。']) {
+    assert.ok(sectionText(dialog).includes(s), s);
+  }
+  const demoCheck = byClass(dialog, 'check').at(-1);
+  assert.equal(demoCheck.checked, false, 'M4-10: off by default');
+  assert.equal(isModalOpen(), true);
+  byText(dialog, 'button', '手書きを書き出す（iPad アプリ用）').click();
+  const r = await p;
+  assert.deepEqual(r, { settings: { allowFinger: false, hiddenCalendarIds: [] }, action: 'exportInk', includeDemo: false });
+  assert.equal(isModalOpen(), false);
+
+  // The check is carried in the result (and the edited settings come with it).
+  const p2 = openSettings({ settings, calendars: CALS, auth: { signedIn: true, configured: true, demo: false }, version: '1.0.6' });
+  dialog = byClass(doc.body, 'dialog')[0];
+  const check2 = byClass(dialog, 'check').at(-1);
+  check2.checked = true;
+  check2.dispatchEvent(new FakeEvent('change'));
+  const sw = all(dialog, (c) => c.getAttribute('role') === 'switch')[0];
+  sw.checked = true;
+  sw.dispatchEvent(new FakeEvent('change'));
+  byText(dialog, 'button', '手書きを書き出す（iPad アプリ用）').click();
+  const r2 = await p2;
+  assert.equal(r2.action, 'exportInk');
+  assert.equal(r2.includeDemo, true);
+  assert.equal(r2.settings.allowFinger, true);
+
+  // お試しモード: the button only (no Drive, no check).
+  const p3 = openSettings({ settings, calendars: [], auth: { signedIn: false, configured: true, demo: true }, version: '1.0.6' });
+  dialog = byClass(doc.body, 'dialog')[0];
+  assert.ok(sectionText(dialog).includes('手書きを書き出す（iPad アプリ用）'));
+  assert.ok(!sectionText(dialog).includes('お試しモードの手書きも含める'));
+  assert.equal(byClass(dialog, 'check').length, 0);
+  byText(dialog, 'button', '手書きを書き出す（iPad アプリ用）').click();
+  assert.deepEqual(await p3, { settings: { allowFinger: false, hiddenCalendarIds: [] }, action: 'exportInk', includeDemo: false });
+
+  // Welcome screen (neither signed in nor demo): no 「データ」 section at all.
+  const p4 = openSettings({ settings, calendars: [], auth: { signedIn: false, configured: true, demo: false }, version: '1.0.6' });
+  dialog = byClass(doc.body, 'dialog')[0];
+  assert.equal(sectionText(dialog), null);
+  assert.ok(!dialog.textContent.includes('手書きを書き出す'));
+  assert.ok(dialog.textContent.includes('データについて'));
+  dialog.dispatchEvent(new FakeEvent('keydown', { key: 'Escape' }));
+  assert.equal((await p4).action, undefined);
 });
 
 test('header: title, view switch, sync and auth chips, partial updates', () => {

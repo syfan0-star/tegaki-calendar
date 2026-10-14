@@ -57,6 +57,7 @@ js/google/calendar.js      C
 js/google/drive.js         C
 js/data/calendar-source.js C
 js/data/ink-store.js       D
+js/data/ink-export.js      D    (1.0.6: 「手書きを書き出す（iPad アプリ用）」の純粋な部分。tegaki-web-export v1 JSON; §4 D)
 js/ink/model.js            B
 js/ink/geometry.js         B
 js/ink/render.js           B
@@ -381,6 +382,8 @@ export function createDriveApi(http) → {
   listPageFiles(pageId),   // files in appDataFolder with appProperties page=<pageId> (all devices), all pages of results
                            // GET /drive/v3/files?spaces=appDataFolder&q=appProperties has { key='page' and value='<escaped>' }
                            //   &fields=nextPageToken,files(META_FIELDS)&pageSize=1000&orderBy=createdTime  (nextPageToken MUST be in fields)
+  listAllInkFiles(),       // 1.0.6: every ink file of every page and device: same request with q=appProperties has { key='schema' and value='1' }
+                           // (all result pages, MAX_PAGES 200). Used by js/data/ink-export.js only; NOT in ink-store's DRIVE_METHODS.
   getMeta(fileId),         // META_FIELDS of one file
   download(fileId),        // text (alt=media)
   generateId(),            // one pre-generated id (keeps a pool: GET /drive/v3/files/generateIds?count=20&space=appDataFolder&type=files)
@@ -460,6 +463,30 @@ export function createInkStore({ kv, drive = null, deviceId, onRemoteUpdate, onS
 //   Never lose local data.
 // Concurrency: serialize per page (one upload at a time per pageId; a save during upload re-schedules after it).
 ```
+
+### D. js/data/ink-export.js  (1.0.6: 「手書きを書き出す（iPad アプリ用）」; pure, importable in Node)
+```js
+export const EXPORT_FORMAT = 'tegaki-web-export'; export const EXPORT_VERSION = 1;
+export const EXPORTABLE_ID_RE = /^(?:d-\d{4}-\d{2}-\d{2}|w-\d{4}-\d{2}-\d{2}|m1-\d{4}-\d{2}|y-\d{4})$/;
+export function isExportablePageId(pageId)          // matches the RE, and a 'w-' id is a Monday (Date getDay() === 1)
+export function exportFileName(date = new Date())   // 'tegaki-web-export-YYYY-MM-DD.json' (local date)
+export function localIsoString(date)                // '2026-10-14T09:41:00.000+09:00' (local time + offset, not toISOString)
+export function buildExport({ pages, app, includesDemo = false, exportedAt = new Date() })
+  // pages: PageDoc[] (the same pageId is merged with mergePages) → live strokes only, written like serializePage
+  //   (strokes in id order, deleted = the merged tombstones in id order, kept so a stroke erased here never comes back
+  //   when the app imports the same file twice); pages without a live stroke and ids that fail isExportablePageId are
+  //   dropped ('m-YYYY-MM', Sunday 'w-'); pages in pageId string order. Returns an object (JSON.stringify is the caller's).
+  //   → { format, v, exportedAt, app: 'web/<APP_VERSION>', includesDemo, pages }
+export function parseExport(text)                   // the reverse (tests, a future 「読み込み」): checks format / v, deserializePage per page; throws otherwise
+export async function collectDrivePages(drive, { onProgress } = {})   // drive.listAllInkFiles() → download each → deserializePage → mergePages. Map<pageId, PageDoc>
+export async function collectKvPages(kv)            // kv.keys('page:') → each 'page:<id>' deserialized. Map<pageId, PageDoc>
+export async function collectAll({ drive = null, kv, demoKv = null, onProgress }) // the three merged with mergePages → PageDoc[] (pageId order)
+```
+// The format is shared with the iPad app (tegaki-calendar-ios/docs/M4_CONTRACT.md §1.3); tests/fixtures/tegaki-web-export-sample.json
+// and -expected.json are its §1.4 samples, byte for byte the same as the app's own test fixtures.
+// main.js exportInkFlow(includeDemo): notify 「手書きを集めています…」 → collectAll({ drive: driveForInk(), kv: S.kv, demoKv })
+// → buildExport → Blob + <a download> → 「手書きを書き出しました（{pages} ページ・{strokes} 本）」 / 「書き出す手書きがありません」 /
+// 「書き出せませんでした: {message}」; offline in Google mode → the local part only + 「オフラインのため、この端末にある分だけを書き出しました」.
 
 ### E. js/ink/surface.js  (canvases: base + live, both inside pageEl, same size)
 ```js
@@ -758,10 +785,13 @@ Event dialog (ui/event-dialog.js): see §4 F2 signature. Layout: sheet/modal cen
 - Buttons: 「キャンセル」, 「保存」(primary, disabled while title empty? — no: empty title allowed → saved as '(タイトルなし)'? Use: if empty, focus title & shake; require non-empty).
 - Esc/backdrop tap = cancel. Returns a Promise as specified. Never autofocus the title (keyboard would pop up).
 
-Settings (ui/settings.js): `openSettings({ settings, calendars, auth: { signedIn, email, configured, demo }, version }) → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes' }>`
+Settings (ui/settings.js): `openSettings({ settings, calendars, auth: { signedIn, email, configured, demo }, version }) → Promise<{ settings, action?: 'signIn'|'signOut'|'exitDemo'|'enterDemo'|'addScopes'|'exportInk', includeDemo? }>`
 - Sections: 「Googleアカウント」(status, email, ログイン/ログアウト, お試しモード切替), 「表示するカレンダー」(checkbox list with color dots),
   「予定の登録先」(select writable), 「入力」(指・マウスでも書く toggle; note 「2本指でトンと叩くと、ペンと消しゴムが切り替わります」),
   「予定にした手書きを消す（初期値）」toggle,
+  「データ」(1.0.6; only when signedIn or demo: button 「手書きを書き出す（iPad アプリ用）」 → closes with action 'exportInk' and
+  includeDemo = the 「お試しモードの手書きも含める」 check, shown in Google mode only, off by default; note 「全ページ・全端末の手書きを
+  1 つのファイルにまとめて保存します。iPad では「ファイル」アプリのダウンロードに入ります。」),
   「データについて」(text: 手書きは Google ドライブの「アプリ専用の非表示フォルダ」に保存されます。…), バージョン.
 
 Toast (ui/toast.js): `toast(message, { actionLabel, onAction, duration = 3000, kind, onClose })` (duration ≤ 0 → sticky with ×;

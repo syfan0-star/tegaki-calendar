@@ -13,7 +13,7 @@
 //   「新しいバージョンがあります」 toast); activate claims clients and deletes old caches. An incomplete
 //   precache fails the install, so the old worker and its complete cache stay until a later retry.
 
-const VERSION = '1.0.5'; // keep in sync with APP_VERSION in js/config.js
+const VERSION = '1.0.6'; // keep in sync with APP_VERSION in js/config.js
 const CACHE_PREFIX = 'tegaki-v';
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const NETWORK_TIMEOUT_MS = 4000;
@@ -50,6 +50,7 @@ const APP_FILES = [
   'js/google/drive.js',
   'js/data/calendar-source.js',
   'js/data/ink-store.js',
+  'js/data/ink-export.js',
   'js/ink/model.js',
   'js/ink/geometry.js',
   'js/ink/render.js',
