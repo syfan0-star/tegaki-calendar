@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>プライバシーポリシー — てがきカレンダー</title>
+  <link rel="icon" href="../icons/favicon-32.png">
+  <style>
+    :root { --text: #1f2937; --muted: #6b7280; --accent: #2563eb; --paper: #fffdf8; --line: #e5e7eb; }
+    body {
+      margin: 0; background: var(--paper); color: var(--text);
+      font: 16px/1.8 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+    h3 { font-size: 16px; margin: 20px 0 6px; }
+    p, li { margin: 0 0 8px; }
+    .meta { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); }
+    code { font-size: 14px; background: #f3f4f6; padding: 1px 6px; border-radius: 4px; word-break: break-all; }
+    table { border-collapse: collapse; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>てがきカレンダー プライバシーポリシー（iPad アプリ版）</h1>
+    <p class="meta">てがきカレンダー（iPad アプリ版）／最終更新：2026年10月17日</p>
+
+    <p><strong>要約</strong>：iPad アプリ版「てがきカレンダー」は、あなたの情報を<strong>何も集めません</strong>。開発者のサーバーはなく、アカウント登録もなく、広告や解析の仕組みも入っていません。手書きと設定は、あなたの iPad の中と、あなた自身の iCloud にだけ保存され、開発者は見ることができません。予定は iPad の「カレンダー」から読み書きしますが、そのデータがアプリの外に送られることはありません。料金は Apple が扱い、開発者はカード情報を受け取りません。</p>
+    <p>関連文書：<a href="terms.html">利用規約</a> ／ <a href="support.html">サポート</a></p>
+
+    <h2 id="1-開発者が集める情報ありません">1. 開発者が集める情報：ありません</h2>
+    <ul>
+      <li>本アプリは、あなたの名前・メールアドレス・位置情報・端末の識別子・使い方の記録などを、一切集めません。</li>
+      <li>開発者のサーバーはありません。アプリが通信する相手は、Apple の iCloud（あなた自身の保存領域）と、Apple の App Store（購入の確認）だけです。</li>
+      <li>iCloud の変更を知るために Apple のプッシュ通知の仕組み（サイレント通知）を使いますが、画面に通知は表示されず、通知に内容も含まれません。</li>
+      <li>広告はありません。アクセス解析や行動追跡（トラッキング）の仕組みも入っていません。他社の SDK（部品プログラム）も使っていません。</li>
+      <li>アカウント登録やログインはありません。</li>
+    </ul>
+    <h2 id="2-データの保存場所あなたの端末とあなたの-icloud">2. データの保存場所：あなたの端末と、あなたの iCloud</h2>
+    <table>
+      <thead>
+        <tr><th>データ</th><th>保存場所</th><th>開発者から見えるか</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>手書き（線のデータ）</td><td>端末内、および iCloud（プライベートデータベース）</td><td>見えません</td></tr>
+        <tr><td>設定（ペンの色、表示するカレンダーなど）</td><td>端末内</td><td>見えません</td></tr>
+        <tr><td>予定の控え（表示を速くするための一時的なもの）</td><td>端末内</td><td>見えません</td></tr>
+        <tr><td>購読の状態</td><td>Apple が管理。アプリは Apple から「有効か」と期限を受け取る</td><td>見えません</td></tr>
+        <tr><td>購読の状態の控え（最後に確認した状態と日時）</td><td>端末内（UserDefaults）</td><td>見えません</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><strong>iCloud（プライベートデータベース）</strong>とは、Apple が用意している、あなたの Apple Account 専用の保存領域です。Apple の説明では、ここに入れたデータは開発者の管理画面に表示されず、あなたの iCloud 容量として数えられます。iCloud にサインインしていないときは、端末内だけに保存されます。</li>
+      <li>開発者は、あなたの手書きや予定を受け取らず、閲覧・復元・削除のどれもできません。</li>
+    </ul>
+    <h2 id="3-カレンダーへのフルアクセスをお願いする理由">3. カレンダーへの「フルアクセス」をお願いする理由</h2>
+    <p>初めて使うときの案内の中で「許可の画面を出す」を押すと、iPadOS が「カレンダーへのフルアクセスを許可しますか？」と聞きます（アプリが勝手に出すことはありません）。</p>
+    <ul>
+      <li><strong>なぜフルアクセスか</strong>：iPadOS には、予定を「読むだけ」の権限がありません。予定を画面に表示するだけでも、Apple の仕組み上「フルアクセス」が必要です。</li>
+      <li><strong>何に使うか</strong>：
+      <ul>
+        <li>予定を日・週・月・年のページに表示するため</li>
+        <li>あなたが手書きから作った予定を、あなたが選んだカレンダーに保存するため</li>
+        <li>あなたが編集・削除した予定を反映するため</li>
+      </ul>
+      </li>
+      <li><strong>何をしないか</strong>：予定の中身を、端末の外（開発者やその他の誰か）に送ることはありません。あなたが操作していないときに、勝手に予定を作ったり変えたりすることもありません。</li>
+      <li><strong>Google カレンダーについて</strong>：アプリは Google とつながりません。iPad の設定アプリに追加した Google アカウントを iPadOS が同期し、その結果を iPad の「カレンダー」から読んでいます。Google 側での扱いは Google のプライバシーポリシーに従います。</li>
+      <li><strong>許可の取り消し</strong>：「設定」→「プライバシーとセキュリティ」→「カレンダー」→「てがきカレンダー」で、いつでも変えられます。取り消すと予定は表示されませんが、手書きはそのまま使えます。</li>
+    </ul>
+    <h2 id="4-手書きと-apple-pencil">4. 手書きと Apple Pencil</h2>
+    <ul>
+      <li>手書きは「線の座標」として保存されます。文字として読み取って解析したり、どこかに送ったりすることはありません。</li>
+      <li>予定のタイトル欄に Apple Pencil で書くと文字に変わるのは、iPadOS の「スクリブル」機能によるもので、端末の中で処理されます。</li>
+      <li>Apple Pencil のダブルタップやスクイーズの動作は、「設定」→「Apple Pencil」の設定を読み取って従います。これも端末の中だけの処理です。</li>
+    </ul>
+    <h2 id="5-購入と料金について">5. 購入と料金について</h2>
+    <ul>
+      <li>サブスクリプションの購入・請求・解約・返金は Apple が行います。開発者は、あなたのカード番号や請求先住所を受け取りません。</li>
+      <li>開発者が Apple から受け取るのは、個人を特定できない形の売上の集計だけです。</li>
+      <li>無料試用の資格（以前に試用したか）は Apple が判定し、アプリには「対象か否か」だけが伝わります。</li>
+    </ul>
+    <h2 id="6-第三者への提供ありません">6. 第三者への提供：ありません</h2>
+    <ul>
+      <li>開発者は、あなたのデータを誰にも渡しません（そもそも持っていません）。</li>
+      <li>Apple の iCloud と App Store は、あなたと Apple との契約に基づいて動いています。これらは Apple のプライバシーポリシー（<a href="https://www.apple.com/jp/legal/privacy/" rel="noopener">https://www.apple.com/jp/legal/privacy/</a>）に従います。</li>
+    </ul>
+    <h2 id="7-apple-を通じて届くことがある情報">7. Apple を通じて届くことがある情報</h2>
+    <ul>
+      <li>iPadOS の「設定」→「プライバシーとセキュリティ」→「解析と改善」で「App デベロッパと共有」をオンにしている場合、アプリが不意に終了したときの情報（クラッシュの記録）を Apple が集め、個人を特定しない形で開発者に見せることがあります。これは Apple の仕組みで、あなたがオフにできます。</li>
+      <li>App Store のレビューや評価は、Apple の仕組みで公開されるもので、本アプリが集めるものではありません。</li>
+    </ul>
+    <h2 id="8-子どもの利用">8. 子どもの利用</h2>
+    <p>本アプリは子ども向けには作られておらず、子ども向けのカテゴリには登録しません。年齢を問わず、本アプリは個人情報を集めません。</p>
+    <h2 id="9-データの削除">9. データの削除</h2>
+    <ul>
+      <li>アプリの設定の「この iPad の手書きを全て消す」で、端末と iCloud の両方から手書きを消せます。</li>
+      <li>アプリを削除すると、端末内のデータは消えます。iCloud 側は、「設定」›「Apple Account」›「iCloud」›「アカウントのストレージを管理」›「てがきカレンダー」（iPadOS 17 では「Apple ID」）から消せます。</li>
+      <li>アプリで作った予定は、ふつうのカレンダーの予定として残ります。消すときは「カレンダー」アプリや Google カレンダーから削除してください。</li>
+      <li>手順の詳細は<a href="support.html#自分のデータを全部消すには">サポートページ</a>にあります。開発者にはデータがないため、開発者への削除依頼は必要ありません。</li>
+    </ul>
+    <h2 id="10-このポリシーの変更">10. このポリシーの変更</h2>
+    <p>集める情報の種類が変わるなど大きな変更をするときは、施行前にアプリ内と<a href="support.html">サポートページ</a>でお知らせします。小さな文言の修正は、このページの「最終更新」を更新するだけの場合があります。</p>
+    <h2 id="11-連絡先">11. 連絡先</h2>
+    <ul>
+      <li>開発者：池田 雅高（個人）</li>
+      <li>メール：<a href="mailto:syfan0@gmail.com">syfan0@gmail.com</a></li>
+      <li>サポートページ：<a href="support.html">サポート</a>（<a href="https://syfan0-star.github.io/tegaki-calendar/app/support.html" rel="noopener">https://syfan0-star.github.io/tegaki-calendar/app/support.html</a>）</li>
+    </ul>
+    <h2 id="付録-aweb-版との違い">付録 A　Web 版との違い</h2>
+    <p>ブラウザで動く Web 版「手書きカレンダー」は、Google にログインして Google カレンダーと Google ドライブに直接つなぐ仕組みでした（Web 版のポリシー：<a href="../privacy.html">https://syfan0-star.github.io/tegaki-calendar/privacy.html</a>）。iPad アプリ版は、Google へのログインも Google ドライブへの保存もしません。Google カレンダーの予定は iPadOS を通じて、手書きは iCloud に保存されます。</p>
+    <h2 id="付録-bapp-privacyapp-store-のプライバシー欄の回答案">付録 B　App Privacy（App Store の「プライバシー」欄）の回答案</h2>
+    <p>App Store Connect では、アプリが集めるデータの種類を申告します（「プライバシーラベル」）。本アプリの回答案は次のとおりです。</p>
+    <table>
+      <thead>
+        <tr><th>App Store Connect の質問</th><th>回答案</th><th>理由</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>このアプリ（または連携する第三者）はデータを収集しますか？</td><td><strong>いいえ</strong></td><td>開発者のサーバーはなく、データを受け取る仕組みがない</td></tr>
+        <tr><td>結果として表示されるラベル</td><td><strong>「データは収集されません」（Data Not Collected）</strong></td><td></td></tr>
+        <tr><td>トラッキング（追跡）をしますか？</td><td><strong>いいえ</strong></td><td>広告・解析 SDK なし</td></tr>
+        <tr><td>プライバシーポリシーの URL</td><td><a href="https://syfan0-star.github.io/tegaki-calendar/app/privacy.html" rel="noopener">https://syfan0-star.github.io/tegaki-calendar/app/privacy.html</a></td><td>5.1.1 の必須項目</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><strong>考え方</strong>：Apple の定義では「収集」とは、データを端末の外に送り、開発者や第三者が後から利用できる状態にすることです。本アプリでは、予定は端末内の「カレンダー」との読み書きだけ、手書きは利用者本人の iCloud（開発者が触れない領域）への保存だけなので、「収集」に当たらないと考えます。</li>
+      <li><strong>審査で聞かれたときの説明文（案）</strong>：「本アプリにはサーバーがありません。カレンダーのデータは EventKit で端末内の予定を表示・編集するためだけに使い、端末外へ送信しません。手書きデータは利用者自身の iCloud プライベートデータベースに保存され、開発者はアクセスできません。解析・広告・第三者 SDK は含みません。」</li>
+      <li><strong>カレンダー権限の説明文</strong>（許可を求めるときに iPadOS が表示する文）：「カレンダーの予定を手帳のページに表示し、手書きから予定を作るために使います。iPadOS には読み取りだけの許可が無いため、フルアクセスをお願いしています。予定は iPad の中だけで扱い、外部には送りません。」</li>
+    </ul>
+    <p class="meta">作成の経緯: この文書は開発者が AI の草稿をもとに作成し、内容を確認しています。</p>
+
+    <p class="meta"><a href="support.html">サポート</a> ／ <a href="terms.html">利用規約</a> ／ <a href="privacy.html">プライバシーポリシー</a> ／ <a href="../">手書きカレンダー（Web 版）</a></p>
+  </main>
+</body>
+</html>
