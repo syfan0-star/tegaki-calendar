@@ -1,4 +1,4 @@
-// iPad アプリ版の公開文書（app/*.html。M5 §5.2）の静的検査。
+// iPad アプリ版の公開文書（app/*.html。M5 §5.2、M6 §5.2）の静的検査。
 // 【】と「下書き」の禁止は npm test に入れず tools/check-legal.mjs（npm run check:legal）に置く（M5-35）。
 
 import test from 'node:test';
@@ -28,7 +28,7 @@ test('(2) every page has lang="ja", the CSP meta, the favicon and 最終更新',
 
 test('(3) terms.html names the prices, the trial, the contact and the sibling pages', () => {
   includesAll(read('app/terms.html'), [
-    '300 円', '2,400 円', '14 日', 'syfan0@gmail.com', 'privacy.html', 'support.html', 'Apple Account',
+    '300 円', '2,400 円', '14 日', 'syfan0@gmail.com', 'privacy.html', 'support.html', 'Apple Account', '手書きを書き出す',
   ], 'app/terms.html');
 });
 
@@ -36,9 +36,9 @@ test('(4) privacy.html covers collection, iCloud, the UserDefaults cache and lin
   includesAll(read('app/privacy.html'), ['収集', 'iCloud', 'UserDefaults', 'terms.html'], 'app/privacy.html');
 });
 
-test('(5) support.html has the contact, restore and the Web-version import steps', () => {
+test('(5) support.html has the contact, restore, the Web-version import steps and the export FAQ', () => {
   includesAll(read('app/support.html'), [
-    'syfan0@gmail.com', '購入を復元', '手書きを書き出す（iPad アプリ用）', 'Web 版の手書きを取り込む',
+    'syfan0@gmail.com', '購入を復元', '手書きを書き出す（iPad アプリ用）', 'Web 版の手書きを取り込む', '手書きを書き出すには',
   ], 'app/support.html');
 });
 
@@ -53,4 +53,12 @@ test('(6) no page links to a .md file or contains a script', () => {
 test('(7) the Web-version policy (../privacy.html) is linked from privacy.html or index.html', () => {
   const linked = ['app/privacy.html', 'app/index.html'].some((p) => read(p).includes('../privacy.html'));
   assert.ok(linked, 'neither app/privacy.html nor app/index.html links to ../privacy.html');
+});
+
+test('(8) no page says the export is unreleased (未提供・提供予定・順次提供)', () => {
+  // M6 §5.2: the export ships in 1.0, so terms.html and support.html must not promise it for later.
+  for (const p of PAGES) {
+    const html = read(p);
+    for (const word of ['未提供', '提供予定', '順次提供']) assert.ok(!html.includes(word), `${p} contains ${JSON.stringify(word)}`);
+  }
 });
