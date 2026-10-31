@@ -6,9 +6,9 @@ iPad の Safari で動く、**Google カレンダーに Apple Pencil で手書�
 - 公開先（予定）: <https://syfan0-star.github.io/tegaki-calendar/>
 - Google とつなぐ設定: [docs/SETUP.md](docs/SETUP.md)
 - プライバシーポリシー: <https://syfan0-star.github.io/tegaki-calendar/privacy.html>
-- iPad アプリ版の利用規約: <https://syfan0-star.github.io/tegaki-calendar/app/terms.html>
-- iPad アプリ版のプライバシーポリシー: <https://syfan0-star.github.io/tegaki-calendar/app/privacy.html>
-- iPad アプリ版のサポート: <https://syfan0-star.github.io/tegaki-calendar/app/support.html>
+- アプリ版の利用規約: <https://syfan0-star.github.io/tegaki-calendar/app/terms.html>
+- アプリ版のプライバシーポリシー: <https://syfan0-star.github.io/tegaki-calendar/app/privacy.html>
+- アプリ版のサポート: <https://syfan0-star.github.io/tegaki-calendar/app/support.html>
 
 ## できること
 
@@ -24,7 +24,7 @@ iPad の Safari で動く、**Google カレンダーに Apple Pencil で手書�
 | 予定にする（囲む） | 「投げなわ」で書いた文字を囲む → 「予定にする」 → 書いた位置から日時が入った画面が開く → タイトルを書いて保存 |
 | 予定の編集 | 予定を **指でタップ** すると、編集・削除の画面が開きます |
 | お試しモード | Google につながずに、見本の予定で操作を試せます（手書きはこの端末の中だけに保存） |
-| 手書きの書き出し | 設定の「手書きを書き出す（iPad アプリ用）」で、全ページ・全端末の手書きを 1 つのファイルにまとめて保存できます（iPad では「ファイル」アプリのダウンロードに入り、iPad アプリ版の「Web 版の手書きを取り込む」で読み込めます） |
+| 手書きの書き出し | 設定の「手書きを書き出す（iPad アプリ用）」で、全ページ・全端末の手書きを 1 つのファイルにまとめて保存できます（iPad では「ファイル」アプリのダウンロードに入り、アプリ版の「Web 版の手書きを取り込む」で読み込めます） |
 
 ## 使い方のコツ
 

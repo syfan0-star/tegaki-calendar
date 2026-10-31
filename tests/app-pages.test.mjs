@@ -62,3 +62,12 @@ test('(8) no page says the export is unreleased (未提供・提供予定・順�
     for (const word of ['未提供', '提供予定', '順次提供']) assert.ok(!html.includes(word), `${p} contains ${JSON.stringify(word)}`);
   }
 });
+
+test('(9) no page says この iPad or iPad アプリ版, and support.html answers how much a page holds', () => {
+  // M7A §6.4: 1.1 runs on the iPad and the iPhone, so the pages say この端末 and （アプリ版）.
+  for (const p of PAGES) {
+    const html = read(p);
+    for (const word of ['この iPad', 'iPad アプリ版']) assert.ok(!html.includes(word), `${p} contains ${JSON.stringify(word)}`);
+  }
+  includesAll(read('app/support.html'), ['1 ページにどれだけ書けますか'], 'app/support.html');
+});
