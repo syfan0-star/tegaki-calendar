@@ -69,5 +69,5 @@ test('(9) no page says この iPad or iPad アプリ版, and support.html answer
     const html = read(p);
     for (const word of ['この iPad', 'iPad アプリ版']) assert.ok(!html.includes(word), `${p} contains ${JSON.stringify(word)}`);
   }
-  includesAll(read('app/support.html'), ['1 ページにどれだけ書けますか'], 'app/support.html');
+  includesAll(read('app/support.html'), ['1 ページにどれだけ書けますか', '拡大・縮小するには'], 'app/support.html');
 });
