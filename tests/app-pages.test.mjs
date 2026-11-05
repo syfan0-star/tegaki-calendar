@@ -160,3 +160,44 @@ test('(10) every link between the pages lands on a file and, with a #, on an id 
     }
   }
 });
+
+test('(10) terms.html has the sentences of M7B §6.4 and the EU terms of §11.3', () => {
+  includesAll(read('app/terms.html'), [
+    'あなたがお住まいの国の消費者保護の法律で、放棄できない権利は、この規約によって制限されません。', // §6.4
+    '日本以外の祝日は公開データ（python-holidays）にもとづく参考の情報で、正確さを保証しません。', // §6.4
+    '本アプリは、App Store で配信している国と地域で使えます。', // T-1
+    'Apple Distribution International Ltd.', 'https://www.apple.com/legal/internet-services/itunes/ie/terms.html', // T-3
+    '法律にもとづく撤回の権利', // T-4
+    'EU（欧州連合）にお住まいの消費者の方には', // T-6
+    '<strong>祝日の表示</strong>', // T-9
+  ], 'app/terms.html');
+});
+
+test('(10) privacy.html has Sections 12 and 13 of M7B §11.3, and the headings of P-4', () => {
+  includesAll(read('app/privacy.html'), [
+    '祝日のデータはアプリの中に入っていて、表示のために通信することはありません。', // §6.4
+    'id="1-アプリが集める情報ありません"',
+    'id="6-アプリのデータの第三者への提供ありません"',
+    'id="12-問い合わせのメールとこのページを開いたとき"',
+    'id="13-eu欧州連合アイスランドノルウェー英国スイスにお住まいの方へ"',
+    'メールは Google の Gmail に保存されます。', 'Anthropic の Claude', 'GDPR 第 6 条 1 項 f',
+  ], 'app/privacy.html');
+});
+
+test('(10) support.html answers the EU, language, holiday and week questions', () => {
+  includesAll(read('app/support.html'), [
+    'EU で購入を取り消すには？', // S-4
+    '表示の言語を変えるには？', '祝日の国を変えるには？', // §6.4
+    '週の手書きが見えなくなったときは？', // §10.4
+    '祝日のデータの出どころは python-holidays（MIT ライセンス）です。', // §5.9
+  ], 'app/support.html');
+});
+
+test('(10) no Japanese page says the App is kept out of the EU, or uses hreflang', () => {
+  for (const p of PAGES) {
+    const html = read(p);
+    for (const words of ['EU には配信', 'EU（欧州連合）向けには配信', 'EU（欧州連合）からの利用', '配信地域', 'hreflang']) {
+      assert.ok(!html.includes(words), `${p} contains ${JSON.stringify(words)}`);
+    }
+  }
+});
