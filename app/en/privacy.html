@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>Privacy Policy — Tegaki Calendar</title>
+  <link rel="icon" href="../../icons/favicon-32.png">
+  <style>
+    :root { --text: #1f2937; --muted: #6b7280; --accent: #2563eb; --paper: #fffdf8; --line: #e5e7eb; }
+    body {
+      margin: 0; background: var(--paper); color: var(--text);
+      font: 16px/1.8 -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 26px; margin: 0 0 4px; }
+    h2 { font-size: 19px; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+    h3 { font-size: 16px; margin: 20px 0 6px; }
+    p, li { margin: 0 0 8px; }
+    .meta { color: var(--muted); font-size: 14px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+    code { font-size: 14px; background: #f3f4f6; padding: 1px 6px; border-radius: 4px; word-break: break-all; }
+    table { border-collapse: collapse; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tegaki Calendar Privacy Policy (App)</h1>
+    <p class="meta">Tegaki Calendar (App) / Last updated: November 5, 2026</p>
+
+    <p>This is a translation for convenience. The Japanese version prevails.</p>
+    <p><a href="../privacy.html" lang="ja">日本語版（正本）</a></p>
+    <p><strong>Summary</strong>: “Tegaki Calendar”, the app for iPad and iPhone, collects <strong>no information</strong> about you. There is no developer server, no account registration, and no advertising or analytics. Your handwriting and settings are saved only on your device (iPad or iPhone) and in your own iCloud, and the developer cannot see them. The App reads and writes events through the Calendar on your device, but that data is never sent outside the App. Apple handles payments, and the developer does not receive card details. Section 12 explains what happens when you email support.</p>
+    <p>Related documents: <a href="terms.html">Terms of Service</a> / <a href="support.html">Support</a></p>
+
+    <h2 id="1-information-the-app-collects-none">1. Information the App collects: none</h2>
+    <ul>
+      <li>The App collects none of your name, email address, location, device identifiers, records of how you use it, or similar information.</li>
+      <li>There is no developer server. The App communicates only with Apple's iCloud (your own storage space) and Apple's App Store (to check purchases).</li>
+      <li>The holiday data is built into the App, and the App does not go online to show holidays.</li>
+      <li>To learn about changes in iCloud, the App uses Apple's push notification system (silent notifications), but nothing appears on the screen, and the notifications contain no content.</li>
+      <li>There are no ads. There is no analytics or tracking either. No SDKs (software components) from other companies are used.</li>
+      <li>There is no account registration or login.</li>
+    </ul>
+    <h2 id="2-where-data-is-saved-your-device-and-your-icloud">2. Where data is saved: your device and your iCloud</h2>
+    <table>
+      <thead>
+        <tr><th>Data</th><th>Where it is saved</th><th>Can the developer see it?</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Handwriting (stroke data)</td><td>On the device, and in iCloud (private database)</td><td>No</td></tr>
+        <tr><td>Settings (pen color, calendars to show, and so on)</td><td>On the device</td><td>No</td></tr>
+        <tr><td>Saved copy of events (temporary, to show them faster)</td><td>On the device</td><td>No</td></tr>
+        <tr><td>Subscription status</td><td>Managed by Apple. The App receives from Apple only whether it is active and when it expires</td><td>No</td></tr>
+        <tr><td>Saved copy of the subscription status (the last checked status and its time)</td><td>On the device (UserDefaults)</td><td>No</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><strong>iCloud (private database)</strong> is a storage space that Apple provides only for your Apple Account. According to Apple, data put there is not shown in the developer's dashboard, and it counts toward your iCloud storage. When you are not signed in to iCloud, data is saved only on the device.</li>
+      <li>The developer does not receive your handwriting or events and cannot view, restore or delete them.</li>
+    </ul>
+    <h2 id="3-why-the-app-asks-for-full-access-to-your-calendars">3. Why the App asks for full access to your calendars</h2>
+    <p>In the guide shown when you first use the App, tapping the button that shows the permission screen makes iOS or iPadOS ask whether to allow full access to your calendars (the App never shows this request on its own).</p>
+    <ul>
+      <li><strong>Why full access</strong>: iOS and iPadOS have no permission for only reading events. Even just to show events on the screen, Apple's system requires “Full Access”.</li>
+      <li><strong>What it is used for</strong>:
+      <ul>
+        <li>to show events on the day, week, month and year pages</li>
+        <li>to save events you create from handwriting to the calendar you choose</li>
+        <li>to apply the changes you make when you edit or delete events</li>
+      </ul>
+      </li>
+      <li><strong>What it is not used for</strong>: The App never sends the contents of events outside the device (to the developer or anyone else). It never creates or changes events on its own while you are not using it.</li>
+      <li><strong>About Google Calendar</strong>: The App does not connect to Google. iOS or iPadOS syncs the Google account you added in the Settings app on your device, and the App reads the result from the Calendar on your device. How Google handles your data is governed by Google's privacy policy.</li>
+      <li><strong>Turning permission off</strong>: You can change it at any time in Settings &gt; Privacy &amp; Security &gt; Calendars &gt; Tegaki. If you turn it off, events are not shown, but handwriting still works.</li>
+    </ul>
+    <h2 id="4-handwriting-and-apple-pencil">4. Handwriting and Apple Pencil</h2>
+    <ul>
+      <li>Handwriting is saved as “stroke coordinates”. It is never read as text and analyzed, or sent anywhere.</li>
+      <li>When you write with Apple Pencil in the title field of an event and it turns into text, this is done by the Scribble feature of iPadOS, on the device.</li>
+      <li>For double-tap and squeeze on Apple Pencil, the App reads the settings in Settings &gt; Apple Pencil and follows them. This is also processed only on the device.</li>
+      <li>The files you create with “Export Handwriting” in the App's settings (JSON and PDF) go only to the place you choose in the share sheet (the Files app, AirDrop, Mail and so on). They are not sent to the developer. The data file (JSON) contains the strokes of your handwriting and marks that tell which device wrote them (random identifiers for this App; not device names or serial numbers).</li>
+    </ul>
+    <h2 id="5-purchases-and-fees">5. Purchases and fees</h2>
+    <ul>
+      <li>Apple handles purchasing, billing, cancellation and refunds of subscriptions. The developer does not receive your card number or billing address.</li>
+      <li>What the developer receives from Apple is only sales totals in a form that cannot identify individuals.</li>
+      <li>Apple decides whether you can use the free trial (whether you have tried it before), and the App is told only whether you are eligible.</li>
+    </ul>
+    <h2 id="6-sharing-the-apps-data-with-third-parties-none">6. Sharing the App's data with third parties: none</h2>
+    <ul>
+      <li>The developer does not give the App's data (your handwriting, events and settings) to anyone (the developer does not have it in the first place). Emails to support are covered in Section 12.</li>
+      <li>Apple's iCloud and App Store work under your agreement with Apple. They follow Apple's privacy policy (<a href="https://www.apple.com/legal/privacy/" rel="noopener">https://www.apple.com/legal/privacy/</a>).</li>
+    </ul>
+    <h2 id="7-information-that-may-reach-the-developer-through-apple">7. Information that may reach the developer through Apple</h2>
+    <ul>
+      <li>If you have turned on “Share With App Developers” in Settings &gt; Privacy &amp; Security &gt; Analytics &amp; Improvements, Apple may collect information about the App closing unexpectedly (crash logs) and show it to the developer in a form that does not identify you. This is Apple's system, and you can turn it off.</li>
+      <li>App Store reviews and ratings are published through Apple's system. The App does not collect them.</li>
+    </ul>
+    <h2 id="8-use-by-children">8. Use by children</h2>
+    <p>The App is not made for children, and it is not listed in the categories for children. Whatever your age, the App does not collect personal information.</p>
+    <h2 id="9-deleting-data">9. Deleting data</h2>
+    <ul>
+      <li>“Erase All Handwriting on This Device” in the App's settings erases your handwriting from both the device and iCloud.</li>
+      <li>Deleting the App removes the data on the device. The iCloud data can be deleted in Settings &gt; your name (your Apple Account; called Apple ID on iOS and iPadOS 17) &gt; iCloud &gt; Manage Account Storage &gt; Tegaki.</li>
+      <li>Events you created in the App remain as ordinary calendar events. To delete them, delete them in the Calendar app or in Google Calendar.</li>
+      <li>The detailed steps are on the <a href="support.html#how-do-i-delete-all-my-data">support page</a>. The App's data does not reach the developer, so there is no need to ask the developer to delete it. If you want an email you sent to support deleted, please write to the email address in Section 11 (see Sections 12 and 13).</li>
+    </ul>
+    <h2 id="10-changes-to-this-policy">10. Changes to this policy</h2>
+    <p>For major changes, such as a change in the kinds of information collected, the developer will announce them in the App and on the <a href="support.html">support page</a> before they take effect. For small fixes in wording, the developer may only update the “Last updated” date on this page.</p>
+    <h2 id="11-contact">11. Contact</h2>
+    <ul>
+      <li>Developer: Masataka Ikeda (池田 雅高), an individual</li>
+      <li>Email: <a href="mailto:syfan0@gmail.com">syfan0@gmail.com</a></li>
+      <li>Support page: <a href="support.html">Support</a> (<a href="https://syfan0-star.github.io/tegaki-calendar/app/en/support.html" rel="noopener">https://syfan0-star.github.io/tegaki-calendar/app/en/support.html</a>)</li>
+    </ul>
+    <h2 id="12-emails-to-support-and-opening-these-pages">12. Emails to support, and opening these pages</h2>
+    <ul>
+      <li>When you email support, the developer receives your email address, any name you write, and the text of your email. This is not information that the App collects. The developer uses it only to answer your question.</li>
+      <li>Emails are stored in Google's Gmail. To read emails that are not in Japanese and to write replies, the developer may pass the text of your email to an AI translation service (Claude, by Anthropic).</li>
+      <li>Emails are kept only as long as they are needed to deal with your question, and are deleted when they are no longer needed.</li>
+      <li>The Terms of Service, Privacy Policy and Support pages are published on GitHub Pages. When you open a page, GitHub records your IP address for security. The developer cannot see this record. The pages use no cookies or analytics.</li>
+    </ul>
+    <h2 id="13-if-you-live-in-the-eu-european-union-iceland-norway-the-uk-or-switzerland">13. If you live in the EU (European Union), Iceland, Norway, the UK or Switzerland</h2>
+    <ul>
+      <li>For the email information in Section 12, the controller (the person who decides how it is used) is the developer. The contact details are in Section 11.</li>
+      <li>The legal basis for using this information is the legitimate interest in answering your question (GDPR Article 6(1)(f)).</li>
+      <li>You have the right to see your information, have it corrected or deleted, have its use restricted, receive a copy of it, and object to its use. Please write to the email address in Section 11.</li>
+      <li>You can make a complaint to the data protection authority of your country.</li>
+      <li>The developer is in Japan. Your email information is handled in Japan and in the countries where Google and Anthropic handle information. For Japan, there is an adequacy decision by the European Commission. This decision does not cover the countries where Google and Anthropic handle information.</li>
+      <li>Sending an email is up to you. You can use the App without sending one. If you do not send one, we simply cannot answer your question.</li>
+      <li>This information is not used for automated decisions or profiling.</li>
+      <li>Your handwriting, events and settings in the App do not reach the developer, so the developer cannot show or delete them. Section 9 explains how to delete them.</li>
+      <li>Apple decides how information is handled in iCloud and the App Store. Please see Apple's privacy policy (<a href="https://www.apple.com/legal/privacy/" rel="noopener">https://www.apple.com/legal/privacy/</a>).</li>
+    </ul>
+    <h2 id="appendix-a-differences-from-the-web-version">Appendix A. Differences from the web version</h2>
+    <p>The web version “手書きカレンダー”, which runs in a browser, signed in to Google and connected directly to Google Calendar and Google Drive (privacy policy of the web version, in Japanese: <a href="../../privacy.html">https://syfan0-star.github.io/tegaki-calendar/privacy.html</a>). The app version neither signs in to Google nor saves anything to Google Drive. Google Calendar events come through iOS and iPadOS, and handwriting is saved in iCloud.</p>
+    <h2 id="appendix-b-answers-for-app-privacy-the-privacy-section-of-the-app-store">Appendix B. Answers for App Privacy (the “Privacy” section of the App Store)</h2>
+    <p>In App Store Connect, developers declare the types of data an app collects (the “privacy label”). The App's answers are as follows.</p>
+    <table>
+      <thead>
+        <tr><th>Question in App Store Connect</th><th>Answer</th><th>Reason</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Does this app (or its third-party partners) collect data?</td><td><strong>No</strong></td><td>There is no developer server, and no way to receive data</td></tr>
+        <tr><td>Label shown as a result</td><td><strong>“Data Not Collected”</strong></td><td></td></tr>
+        <tr><td>Does the app track users?</td><td><strong>No</strong></td><td>No advertising or analytics SDKs</td></tr>
+        <tr><td>Privacy policy URL</td><td><a href="https://syfan0-star.github.io/tegaki-calendar/app/privacy.html" rel="noopener">https://syfan0-star.github.io/tegaki-calendar/app/privacy.html</a></td><td>Required under guideline 5.1.1</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li><strong>How we see it</strong>: In Apple's definition, “collecting” means sending data off the device so that the developer or third parties can use it later. In the App, events are only read from and written to the Calendar on the device, and handwriting is only saved in the user's own iCloud (an area the developer cannot access), so we consider that this is not “collecting”.</li>
+      <li><strong>Proposed explanation if App Review asks</strong>: “This app has no server. Calendar data is used with EventKit only to show and edit the events on the device, and it is not sent off the device. Handwriting data is saved in the user's own iCloud private database, which the developer cannot access. The app contains no analytics, ads or third-party SDKs.”</li>
+      <li><strong>Calendar permission text</strong> (the text iOS and iPadOS show when asking for permission; on devices in other languages, a translation of it is shown): 「カレンダーの予定を手帳のページに表示し、手書きから予定を作るために使います。iOS と iPadOS には読み取りだけの許可が無いため、フルアクセスをお願いしています。予定はこの端末の中だけで扱い、外部には送りません。」 It means: “This is used to show the events in your calendars on the planner pages and to create events from handwriting. iOS and iPadOS have no permission for only reading, so the App asks for full access. Events are handled only on this device and are not sent outside.”</li>
+    </ul>
+    <p class="meta">How this document was made: The developer wrote the Japanese version based on text prepared with AI, and checked its contents. This English translation was made with AI and checked by translating it back into Japanese. No native English speaker has reviewed it.</p>
+
+    <p class="meta"><a href="support.html">Support</a> / <a href="terms.html">Terms of Service</a> / <a href="privacy.html">Privacy Policy</a> / <a href="../../">Web version “手書きカレンダー” (in Japanese)</a></p>
+  </main>
+</body>
+</html>
