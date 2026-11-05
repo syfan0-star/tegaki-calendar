@@ -201,3 +201,13 @@ test('(10) no Japanese page says the App is kept out of the EU, or uses hreflang
     }
   }
 });
+
+test('(10) each Japanese document has one link to its English version, above the title', () => {
+  // M7B-23: in the EU the App opens the Japanese page, which would otherwise be a dead end.
+  for (const name of ['terms.html', 'privacy.html', 'support.html']) {
+    const html = read(`app/${name}`);
+    const link = `<a href="en/${name}" lang="en">English</a>`;
+    assert.equal(html.split(link).length, 2, `app/${name} should have the link once`);
+    assert.ok(html.indexOf(link) < html.indexOf('<h1>'), `app/${name}: the link should be above the title`);
+  }
+});
